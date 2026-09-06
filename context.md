@@ -36,33 +36,31 @@ SQLite store, derivations, query engine and context packer are the only custom p
 
 ## Testing & Validation Policy
 
-**Delegate routine test execution to the local OpenCode free model.** Claude tokens
-are for analysis, not for watching a test runner.
-
-```
-Claude
-  ↓  asks local OpenCode to run tests
-Local OpenCode  →  npm test / pytest / tsc --noEmit
-  ↓  returns a CONCISE result
-Claude  →  analyses only the failures, only if needed
-```
-
-**Invocation** (`opencode` is at `C:/ProgramData/chocolatey/bin/opencode`):
+**Never read raw test output. Filter it.**
 
 ```bash
-opencode run "Run: npm test && npm run typecheck in C:/Users/sathish/Projects.
-Reply with ONLY: total/passed/failed counts, and for each failure the test name
-plus the assertion or error message. No stack traces. No passing-test names."
+npm test 2>&1 | grep -E '^(ℹ (tests|pass|fail)|✖)'
+```
+
+Measured on this suite: raw output 2,938 bytes (~750 tokens), filtered **36 bytes**
+(~12 tokens). Counts plus every failing test name, deterministically. Pull detail only
+for a test that is actually red:
+
+```bash
+npm test 2>&1 | grep -A 15 '✖ <failing test name>'
 ```
 
 **Rules**
 
-- Return **only** counts plus failure names and error messages.
-- Do **not** send full test logs to Claude unless they are needed for debugging.
-- Use Claude for deeper analysis, debugging, implementation decisions, or when the
-  local model cannot resolve the issue.
+- Return only counts plus failure names and error messages.
+- Do not pull full logs unless a specific test needs debugging.
 - **Never skip, `.only`, or suppress a failing test to reduce token usage.** A red
   test is information; hiding it turns a known problem into an unknown one.
+
+**Delegation to a local model was evaluated and rejected.** Invoking
+`opencode run` from the shell puts its reply back into context anyway — ~150 tokens
+against grep's 12 — and interposes an LLM's interpretation between the agent and a
+deterministic result. Filtering wins on both cost and trust.
 
 ---
 

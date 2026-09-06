@@ -78,43 +78,36 @@ Full command set and engine workflow: `.claude/QUICK_START.md`
 
 ## Testing & Validation Policy 🔬
 
-**Delegate routine test execution to the local OpenCode free model. Do not spend
-Claude tokens running or reading test output that a local model can summarise.**
-
-```
-Claude
-  ↓  asks local OpenCode to run tests
-Local OpenCode  →  npm test / pytest / tsc --noEmit
-  ↓  returns a CONCISE result
-Claude  →  analyses only the failures, only if needed
-```
-
-**Delegate to OpenCode:**
+**Never read raw test output. Filter it.** Measured on this suite: raw
+`npm test` is 2,938 bytes (~750 tokens); the filtered form below is **36 bytes**.
 
 ```bash
-opencode run "Run: npm test && npm run typecheck in C:/Users/sathish/Projects.
-Reply with ONLY: total/passed/failed counts, and for each failure the test name
-plus the assertion or error message. No stack traces. No passing-test names."
+npm test 2>&1 | grep -E '^(ℹ (tests|pass|fail)|✖)'
 ```
 
-`opencode` is installed at `C:/ProgramData/chocolatey/bin/opencode`.
-`opencode run <message>` is the non-interactive form.
+That yields counts plus the name of every failing test, deterministically, at
+~12 tokens. Only when something is red do you pull the detail for that one test:
+
+```bash
+npm test 2>&1 | grep -A 15 '✖ <failing test name>'
+```
 
 **Rules:**
 
 | Do | Don't |
 |---|---|
-| Ask OpenCode to run the suite and report counts + failure messages | Pipe full test logs into Claude |
-| Bring Claude in for **debugging, root cause, design decisions** | Use Claude as a test runner |
-| Escalate to Claude when the local model cannot resolve it | Ask Claude to re-read passing output |
-| Keep every failing test failing until genuinely fixed | **Skip, `.only`, or suppress a test to save tokens** |
+| Filter output to counts + failure names | Pipe full test logs into context |
+| Pull detail for **one** failing test at a time | Re-read passing-test output |
+| Fix the root cause | **Skip, `.only`, or suppress a test to save tokens** |
 
 **Never suppress a failing test to reduce token usage.** A red test is
-information; hiding it converts a known problem into an unknown one — the same
+information; hiding it converts a known problem into an unknown one — exactly the
 failure mode as dropping `unresolved_calls` from the graph.
 
-Claude is for: root-cause analysis, implementation decisions, schema and API
-design, and anything the local model gets wrong or cannot resolve.
+> Delegating test runs to a second local model was evaluated and rejected: its
+> reply still lands in this context via the shell, so it costs ~150 tokens
+> against grep's 12, and it puts an LLM's interpretation between you and a
+> deterministic result.
 
 ---
 

@@ -27,7 +27,7 @@ OPTIONS
   --db <path>         Database path            (default: ${DEFAULT_DB})
   --config <path>     Config path              (default: ${DEFAULT_CONFIG})
   --reset             db bootstrap: delete an existing database first
-  --no-check-paths    config check: skip verifying rootPath exists on disk
+  --skip-path-check   config check: don't verify rootPath exists on disk
   --json              Machine-readable output
 
 STATUS
@@ -52,7 +52,9 @@ function main(argv: string[]): number {
         db: { type: "string" },
         config: { type: "string" },
         reset: { type: "boolean", default: false },
-        "check-paths": { type: "boolean", default: true },
+        // node:util parseArgs has no "--no-x" negation, so this is stated
+        // positively. The default remains "do check paths".
+        "skip-path-check": { type: "boolean", default: false },
         json: { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
       },
@@ -67,7 +69,7 @@ function main(argv: string[]): number {
     db: values.db ?? DEFAULT_DB,
     config: values.config ?? DEFAULT_CONFIG,
     reset: values.reset === true,
-    checkPaths: values["check-paths"] !== false,
+    checkPaths: values["skip-path-check"] !== true,
     json: values.json === true,
   };
 
