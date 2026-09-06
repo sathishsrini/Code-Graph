@@ -9,6 +9,10 @@ import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import { loadConfig, ConfigError } from "./config/repos.ts";
 import { FactStore } from "./store/db.ts";
+import {
+  ScipProtobufReader, summarize, roleNames, syntaxKindLabel,
+  ROLE_DEFINITION, hasRole,
+} from "./static/scip/reader.ts";
 
 const DEFAULT_DB = ".codeintel/graph.db";
 const DEFAULT_CONFIG = "config/repos.json";
@@ -21,11 +25,14 @@ USAGE
 COMMANDS
   db bootstrap        Create or verify the SQLite fact store
   config check        Validate config/repos.json and print the resolved repos
+  scip dump           Summarise a .scip index and sample its symbols
   help                Show this message
 
 OPTIONS
   --db <path>         Database path            (default: ${DEFAULT_DB})
   --config <path>     Config path              (default: ${DEFAULT_CONFIG})
+  --index <path>      scip dump: path to a .scip file
+  --sample <n>        scip dump: symbols to print   (default: 20)
   --reset             db bootstrap: delete an existing database first
   --skip-path-check   config check: don't verify rootPath exists on disk
   --json              Machine-readable output
@@ -37,6 +44,8 @@ STATUS
 interface Options {
   db: string;
   config: string;
+  index: string;
+  sample: number;
   reset: boolean;
   checkPaths: boolean;
   json: boolean;
@@ -51,6 +60,8 @@ function main(argv: string[]): number {
       options: {
         db: { type: "string" },
         config: { type: "string" },
+        index: { type: "string" },
+        sample: { type: "string" },
         reset: { type: "boolean", default: false },
         // node:util parseArgs has no "--no-x" negation, so this is stated
         // positively. The default remains "do check paths".
@@ -68,6 +79,8 @@ function main(argv: string[]): number {
   const options: Options = {
     db: values.db ?? DEFAULT_DB,
     config: values.config ?? DEFAULT_CONFIG,
+    index: values.index ?? "",
+    sample: values.sample ? Number(values.sample) : 20,
     reset: values.reset === true,
     checkPaths: values["skip-path-check"] !== true,
     json: values.json === true,
@@ -95,6 +108,13 @@ function main(argv: string[]): number {
         return 2;
       }
       return cmdConfigCheck(options);
+
+    case "scip":
+      if (sub !== "dump") {
+        process.stderr.write(`unknown subcommand: scip ${sub}\n\n${USAGE}`);
+        return 2;
+      }
+      return cmdScipDump(options);
 
     default:
       process.stderr.write(`unknown command: ${command}\n\n${USAGE}`);
@@ -155,6 +175,83 @@ function cmdConfigCheck(options: Options): number {
     }
     throw e;
   }
+}
+
+function cmdScipDump(options: Options): number {
+  if (!options.index) {
+    process.stderr.write("scip dump requires --index <path to .scip>\n");
+    return 2;
+  }
+
+  const reader = new ScipProtobufReader();
+  const index = reader.read(options.index);
+  const summary = summarize(index);
+
+  if (options.json) {
+    process.stdout.write(JSON.stringify(summary, null, 2) + "\n");
+    return 0;
+  }
+
+  process.stdout.write(
+    `index      : ${resolve(options.index)}\n` +
+    `tool       : ${summary.tool}\n` +
+    `projectRoot: ${summary.projectRoot}\n` +
+    `documents  : ${summary.documents}\n` +
+    `symbols    : ${summary.symbols}\n` +
+    `occurrences: ${summary.occurrences} (${summary.definitions} definitions, ` +
+    `${summary.references} references)\n` +
+    `external   : ${summary.externalSymbols}\n\n` +
+    `field coverage (what this indexer actually populates):\n` +
+    `  enclosingRange   : ${summary.occurrencesWithEnclosingRange} occurrences ` +
+    `(${summary.multiLineEnclosingRanges} span >1 line)\n` +
+    `  enclosingSymbol  : ${summary.symbolsWithEnclosingSymbol} / ${summary.symbols} symbols\n` +
+    `  displayName      : ${summary.symbolsWithDisplayName} / ${summary.symbols}\n` +
+    `  documentation    : ${summary.symbolsWithDocumentation} / ${summary.symbols}\n` +
+    `  relationships    : ${summary.symbolsWithRelationships} / ${summary.symbols}\n\n`,
+  );
+
+  process.stdout.write("languages:\n");
+  for (const l of summary.languages) {
+    process.stdout.write(`  ${String(l.n).padStart(5)}  ${l.language || "(none)"}\n`);
+  }
+
+  process.stdout.write("\nsymbol roles (occurrences may carry several):\n");
+  for (const r of summary.roles) {
+    process.stdout.write(`  ${String(r.n).padStart(5)}  ${r.role}\n`);
+  }
+
+  // The distribution that P0-T6's CALLS filters will be chosen from. Printed
+  // because the SyntaxKind numbering has shifted between SCIP versions and
+  // guessing it would silently drop real call edges.
+  process.stdout.write("\nsyntax kinds:\n");
+  for (const k of summary.syntaxKinds) {
+    process.stdout.write(
+      `  ${String(k.n).padStart(5)}  ${String(k.kind).padStart(3)}  ${k.label}\n`,
+    );
+  }
+
+  // Eyeball sample — the P0-T4 acceptance criterion.
+  process.stdout.write(`\nsample of ${options.sample} definitions:\n`);
+  let shown = 0;
+  outer: for (const doc of index.documents) {
+    for (const occ of doc.occurrences) {
+      if (!hasRole(occ.symbolRoles, ROLE_DEFINITION)) continue;
+      const info = doc.symbols.find((s) => s.symbol === occ.symbol);
+      const body = occ.enclosingRange
+        ? `L${occ.enclosingRange.startLine + 1}-${occ.enclosingRange.endLine + 1}`
+        : `L${occ.range.startLine + 1}`;
+      process.stdout.write(
+        `\n  ${doc.relativePath}:${body}  [${syntaxKindLabel(occ.syntaxKind)}]` +
+        `  roles=${roleNames(occ.symbolRoles).join("|") || "none"}\n` +
+        `    name  : ${info?.displayName || "(no displayName)"}\n` +
+        `    symbol: ${occ.symbol}\n`,
+      );
+      shown += 1;
+      if (shown >= options.sample) break outer;
+    }
+  }
+
+  return 0;
 }
 
 process.exitCode = main(process.argv.slice(2));
