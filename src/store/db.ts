@@ -10,14 +10,12 @@
 // ============================================================================
 
 import { DatabaseSync } from "node:sqlite";
-import { readFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
-import { dirname, resolve, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { migrate, latestVersion, type MigrationReport } from "./migrate.ts";
 
-export const SCHEMA_VERSION = "v0-phase0";
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const SCHEMA_PATH = join(HERE, "schema-v0.sql");
+/** The migration a fully-migrated database ends at. Derived, never hand-typed. */
+export const SCHEMA_VERSION = latestVersion();
 
 export type NodeKind =
   | "service" | "route" | "symbol" | "file" | "external" | "datastore" | "config";
@@ -31,6 +29,16 @@ export type Confidence = "certain" | "inferred" | "observed" | "unresolved";
 export type EvidenceKind = "scip" | "treesitter" | "semgrep" | "boot" | "otel" | "manual";
 
 export type Channel = "static" | "boot" | "runtime";
+
+/** Framework lifecycle phase, plus the synthetic `handler` and `handler_inline`. */
+export type ChainPhase = string;
+
+/** Which channel claimed a route exists. Boot and static are not the same claim. */
+export type RouteSource = "boot" | "static";
+
+export type ChainOrigin = "scope" | "route" | "framework" | "handler";
+
+export type UnresolvedKind = "call" | "cross_service" | "datastore";
 
 export interface EdgeInput {
   srcNodeId: number;
@@ -58,6 +66,49 @@ export interface SymbolInput {
   isTest?: boolean;
 }
 
+export interface RouteInput {
+  nodeId: number;
+  repoId: number | null;
+  serviceName: string;
+  method: string;
+  url: string;
+  prefix?: string;
+  handlerNodeId?: number | null;
+  requestSchema?: string | null;
+  responseSchema?: string | null;
+  hasSchema?: boolean;
+  source: RouteSource;
+  runId: number;
+}
+
+export interface ChainInput {
+  routeNodeId: number;
+  position: number;
+  phase: ChainPhase;
+  symbolNodeId?: number | null;
+  key?: string | null;
+  name?: string | null;
+  checkKind?: string | null;
+  origin: ChainOrigin;
+  inheritedFrom?: string | null;
+  confidence: Confidence;
+  evidenceKind: EvidenceKind;
+  fileId?: number | null;
+  line?: number | null;
+  runId: number;
+}
+
+export interface UnresolvedInput {
+  srcNodeId: number;
+  kind: UnresolvedKind;
+  targetHint?: string | null;
+  reason: string;
+  fileId?: number | null;
+  line?: number | null;
+  col?: number | null;
+  runId: number;
+}
+
 export interface IntegrityReport {
   ok: boolean;
   foreignKeyViolations: number;
@@ -69,6 +120,8 @@ export interface IntegrityReport {
 export class FactStore {
   private db: DatabaseSync;
   readonly path: string;
+  /** What this connection applied. An empty `applied` means it was current. */
+  readonly migrations: MigrationReport;
 
   constructor(dbPath: string) {
     this.path = resolve(dbPath);
@@ -76,10 +129,13 @@ export class FactStore {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
     this.db = new DatabaseSync(this.path);
-    this.db.exec(readFileSync(SCHEMA_PATH, "utf8"));
-    this.db.prepare(
-      "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?, datetime('now'))",
-    ).run(SCHEMA_VERSION);
+    // Both pragmas are connection state, not schema, so they live here rather
+    // than in a migration file: journal_mode is a silent no-op inside the
+    // transaction a migration runs in, and foreign_keys defaults to OFF on
+    // every new connection regardless of how the file was created.
+    this.db.exec("PRAGMA journal_mode = WAL");
+    this.db.exec("PRAGMA foreign_keys = ON");
+    this.migrations = migrate(this.db);
   }
 
   /** Delete an existing database file and its WAL sidecars, then recreate. */
@@ -279,6 +335,110 @@ export class FactStore {
     const r = this.db.prepare(
       `DELETE FROM edges WHERE file_id = ? AND evidence_kind IN (${placeholders})`,
     ).run(fileId, ...evidenceKinds);
+    return Number(r.changes);
+  }
+
+  // -- routes ---------------------------------------------------------------
+
+  /**
+   * Insert or replace the detail row for a `route` node.
+   *
+   * R24: boot facts are replaced wholesale per service per run. Merging would
+   * let a *removed* hook survive, and the chain would then be wrong in the one
+   * direction that matters for a security question.
+   */
+  upsertRoute(r: RouteInput): void {
+    this.db.prepare(
+      `INSERT INTO routes
+         (node_id, repo_id, service_name, method, url, prefix, handler_node_id,
+          request_schema, response_schema, has_schema, source, run_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(node_id) DO UPDATE SET
+         repo_id         = excluded.repo_id,
+         service_name    = excluded.service_name,
+         method          = excluded.method,
+         url             = excluded.url,
+         prefix          = excluded.prefix,
+         handler_node_id = excluded.handler_node_id,
+         request_schema  = excluded.request_schema,
+         response_schema = excluded.response_schema,
+         has_schema      = excluded.has_schema,
+         source          = excluded.source,
+         run_id          = excluded.run_id`,
+    ).run(
+      r.nodeId, r.repoId, r.serviceName, r.method.toUpperCase(), r.url,
+      r.prefix ?? "", r.handlerNodeId ?? null, r.requestSchema ?? null,
+      r.responseSchema ?? null, r.hasSchema ? 1 : 0, r.source, r.runId,
+    );
+  }
+
+  /** Route node ids for one service, in a stable order. */
+  routeNodeIds(serviceName: string): number[] {
+    return (this.db.prepare(
+      "SELECT node_id FROM routes WHERE service_name = ? ORDER BY url, method",
+    ).all(serviceName) as Array<{ node_id: number }>).map((r) => r.node_id);
+  }
+
+  // -- route_chain ----------------------------------------------------------
+
+  insertChainEntry(c: ChainInput): void {
+    this.db.prepare(
+      `INSERT INTO route_chain
+         (route_node_id, position, phase, symbol_node_id, key, name, check_kind,
+          origin, inherited_from, confidence, evidence_kind, file_id, line, run_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(route_node_id, phase, position) DO UPDATE SET
+         symbol_node_id = excluded.symbol_node_id,
+         key            = excluded.key,
+         name           = excluded.name,
+         check_kind     = excluded.check_kind,
+         origin         = excluded.origin,
+         inherited_from = excluded.inherited_from,
+         confidence     = excluded.confidence,
+         evidence_kind  = excluded.evidence_kind,
+         file_id        = excluded.file_id,
+         line           = excluded.line,
+         run_id         = excluded.run_id`,
+    ).run(
+      c.routeNodeId, c.position, c.phase, c.symbolNodeId ?? null, c.key ?? null,
+      c.name ?? null, c.checkKind ?? null, c.origin, c.inheritedFrom ?? null,
+      c.confidence, c.evidenceKind, c.fileId ?? null, c.line ?? null, c.runId,
+    );
+  }
+
+  /**
+   * Drop one channel's chain rows for a route (R24).
+   *
+   * Scoped by `evidence_kind` so re-running the boot dump cannot delete the
+   * inline-auth rows P1-T10 derived, and vice versa. The two channels answer
+   * the same question from different evidence; neither owns the other.
+   */
+  deleteChain(routeNodeId: number, evidenceKinds: EvidenceKind[]): number {
+    if (evidenceKinds.length === 0) return 0;
+    const q = evidenceKinds.map(() => "?").join(", ");
+    const r = this.db.prepare(
+      `DELETE FROM route_chain WHERE route_node_id = ? AND evidence_kind IN (${q})`,
+    ).run(routeNodeId, ...evidenceKinds);
+    return Number(r.changes);
+  }
+
+  // -- unresolved_calls -----------------------------------------------------
+
+  /** R11. Stored, never dropped — see the note in 002_phase1_routes.sql. */
+  insertUnresolved(u: UnresolvedInput): void {
+    this.db.prepare(
+      `INSERT INTO unresolved_calls
+         (src_node_id, kind, target_hint, reason, file_id, line, col, run_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT DO NOTHING`,
+    ).run(
+      u.srcNodeId, u.kind, u.targetHint ?? null, u.reason,
+      u.fileId ?? null, u.line ?? null, u.col ?? null, u.runId,
+    );
+  }
+
+  deleteUnresolvedByProvenance(fileId: number): number {
+    const r = this.db.prepare("DELETE FROM unresolved_calls WHERE file_id = ?").run(fileId);
     return Number(r.changes);
   }
 

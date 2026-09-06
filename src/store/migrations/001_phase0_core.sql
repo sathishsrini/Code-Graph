@@ -1,18 +1,15 @@
 -- ===========================================================================
--- code-intel fact store — schema v0  (task P0-T5)
+-- 001_phase0_core  —  tasks P0-T5
 -- ===========================================================================
--- Six tables. Deliberately a SUBSET of the full design in plan §H.
+-- The six tables Phase 0 could actually fill: repos, runs, files, nodes,
+-- symbols, edges. Shipped verbatim as written for P0-T5, then frozen — a
+-- migration is an immutable record of what a database was asked to become.
+-- Later shape changes arrive as later migrations, never by editing this file.
 --
 -- Requirement R72: nothing enters the schema until an extractor produces it.
--- The v2 failure was ~470 lines of DDL for tables nobody could populate. So
--- routes, route_chain, unresolved_calls, spans, summaries and function_cfg are
--- absent here — they arrive with the tasks that fill them (P1-T1 onward).
---
--- Every object below has a producer in Phase 0.
+-- The v1/v2 failure was ~470 lines of DDL for tables nobody could populate.
 -- ===========================================================================
 
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
 
 -- ---------------------------------------------------------------------------
 -- Provenance
@@ -132,12 +129,3 @@ CREATE INDEX IF NOT EXISTS idx_edges_out  ON edges(src_node_id, type, confidence
 CREATE INDEX IF NOT EXISTS idx_edges_in   ON edges(dst_node_id, type, confidence);
 -- Incremental delete-by-provenance (R28) reads exactly this index.
 CREATE INDEX IF NOT EXISTS idx_edges_prov ON edges(file_id, evidence_kind);
-
--- ---------------------------------------------------------------------------
--- Migration bookkeeping
--- ---------------------------------------------------------------------------
-
-CREATE TABLE IF NOT EXISTS schema_version (
-  version    TEXT PRIMARY KEY,
-  applied_at TEXT NOT NULL
-);

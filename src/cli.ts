@@ -12,7 +12,7 @@ import { existsSync } from "node:fs";
 import {
   loadConfig, repoByName, ConfigError, type RepoConfig,
 } from "./config/repos.ts";
-import { FactStore } from "./store/db.ts";
+import { FactStore, SCHEMA_VERSION } from "./store/db.ts";
 import {
   ScipProtobufReader, summarize, roleNames, syntaxKindLabel,
   ROLE_DEFINITION, hasRole,
@@ -177,10 +177,18 @@ function cmdDbBootstrap(options: Options): number {
     const report = store.verifyIntegrity();
 
     if (options.json) {
-      process.stdout.write(JSON.stringify({ path: store.path, ...report }, null, 2) + "\n");
+      process.stdout.write(JSON.stringify(
+        { path: store.path, version: SCHEMA_VERSION, migrations: store.migrations, ...report },
+        null, 2) + "\n");
     } else {
+      const m = store.migrations;
+      const now = m.applied.length
+        ? `, ${m.applied.length} applied now (${m.applied.join(", ")})`
+        : "";
       process.stdout.write(
         `database   : ${store.path}\n` +
+        `version    : ${SCHEMA_VERSION}\n` +
+        `migrations : ${m.alreadyApplied.length} already applied${now}\n` +
         `schema     : ${report.tables} tables/views, ${report.indexes} indexes\n` +
         `foreign key: ${report.foreignKeyViolations === 0 ? "valid" : `${report.foreignKeyViolations} VIOLATION(S)`}\n` +
         `integrity  : ${report.integrityCheck}\n`,

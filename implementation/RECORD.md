@@ -1,0 +1,120 @@
+# Implementation record
+
+One entry per plan task. Written at task completion, before the commit whose
+subject carries the task ID.
+
+Format: **what shipped** · **where it lives** · **how it was verified** ·
+**what it does not do**. The last line is not optional — a task with no stated
+limit has not been thought about.
+
+Plan: [`plans/code-intelligence-engine-plan-v2.md`](../plans/code-intelligence-engine-plan-v2.md) ·
+Deltas: [`PLAN-DELTAS.md`](PLAN-DELTAS.md) ·
+Numbers: [`docs/measurements.md`](../docs/measurements.md)
+
+---
+
+# Phase 0 — prove the pipeline ✅ GATE PASSED (2026-09-07)
+
+| Task | Commit | State |
+|---|---|---|
+| P0-T1 scaffold | `0cf936c` | done |
+| P0-T2 repos.json + loader | `c070fbc`, `a884a79` | done |
+| P0-T3 scip-typescript run | `eedc118` | done |
+| P0-T4 SCIP reader | `eedc118` | done |
+| P0-T5 minimal schema | `c070fbc` | done |
+| P0-T6 CALLS derivation | `778e860` | done |
+| P0-T7 false-positive measurement | `778e860` | done — 0% on 50 (M3) |
+| P0-T8 Fastify boot dump | `8ba444b` | done |
+| P0-T9 `flow` command | `ec547be` | done — **gate** |
+
+## Phase 0 outcome
+
+The pipeline works end to end and the printed tree for
+`POST /api/v1/po` matches source line by line (M7). Two full
+index → boot → flow cycles are byte-identical at 15,332 bytes.
+
+**Three silent defects, found only by running it.** Each is written up in
+`PLAN-DELTAS.md` because each changed the plan:
+
+1. **The engine indexed a system that does not exist** ([D6](PLAN-DELTAS.md)).
+   52 clean, confident edges describing a non-compiling scaffold; zero from the
+   file that runs. Config had declared the file set since P0-T2 and nothing
+   enforced it.
+2. **`routeOptions` does not carry inherited hooks** ([D5](PLAN-DELTAS.md)).
+   31 entries instead of 77 — handler-only, which renders as *"this route has no
+   middleware"* and, on a security query, as *"every route is unauthenticated"*.
+3. **The single most valuable edge was discarded unexamined**
+   ([D7](PLAN-DELTAS.md)). `return axios(axiosConfig)` — the outbound call to the
+   engine — rejected by the container filter before the call-site check ran.
+
+**Two plan corrections:** anonymous hooks are *located*, not renamed
+([D3](PLAN-DELTAS.md)); `fastify-overview` is opt-in, not the boot source
+([D4](PLAN-DELTAS.md)).
+
+**What the gate does not establish** is listed in
+[`OPEN-DECISIONS.md`](OPEN-DECISIONS.md) — the indexer was never stressed, the
+corpus has no plugins or `preHandler` hooks, and untyped CJS drops 86 references
+as unnamed locals.
+
+---
+
+# Phase 1 — useful to humans and agents
+
+| Task | Commit | State |
+|---|---|---|
+| P1-T1 full schema + migrations | `PENDING` | **done** |
+| P1-T2 normalizer | — | not started |
+| P1-T3 scip-python | — | not started |
+| P1-T4 FastAPI boot adapter | — | not started |
+| P1-T5 Next.js static indexing | — | not started |
+| P1-T6 tree-sitter pass | — | not started |
+| P1-T7 cross-service linker | — | not started |
+| P1-T8 route chain expander | — | not started |
+| P1-T9 Semgrep check_kind pack | — | not started |
+| P1-T10 inline auth detector | — | not started |
+| P1-T11 incremental indexing | — | not started |
+| P1-T12 `endpoint_flow` | — | not started |
+| P1-T13 `impact` | — | not started |
+| P1-T14 `security_path` | — | not started |
+| P1-T15 `context_pack` | — | not started |
+| P1-T16 MCP server | — | not started |
+| P1-T17 intra-function CFG | — | not started |
+| P1-T18 guard attribution | — | not started |
+
+## P1-T1 — full schema + migration runner
+
+**Shipped.** A migration runner (`src/store/migrate.ts`) that applies numbered
+SQL files in order, records each in `schema_version`, and runs each in its own
+transaction so a failure in 003 leaves 001 and 002 applied rather than rolling
+the database back to nothing. `SCHEMA_VERSION` is derived from the last file on
+disk, never hand-typed.
+
+Two migrations:
+
+| File | Tables | Producer |
+|---|---|---|
+| `001_phase0_core.sql` | repos, runs, files, nodes, symbols, edges | P0-T3…T8 (frozen as shipped) |
+| `002_phase1_routes.sql` | routes, route_chain, unresolved_calls | P1-T4/T8/T10/T11 |
+
+`FactStore` gained `upsertRoute`, `insertChainEntry`, `deleteChain`,
+`insertUnresolved`, `deleteUnresolvedByProvenance` and `routeNodeIds`.
+`db bootstrap` now prints the version and what it applied.
+
+**Verified.** 149 tests pass, `tsc --noEmit` clean. The migration-specific ones
+assert the properties a re-run of a schema file does not have: applied-once,
+ordered, recorded, and rolled back per file on failure. Two more assert
+behaviour the DDL alone would not give — that re-running the boot channel
+cannot delete the inline-auth channel's chain rows (the property R26 rests on),
+and that `unresolved_calls` deduplicates across re-runs despite its NULL
+columns.
+
+**Deviations.** [D9](PLAN-DELTAS.md) — `spans` and `summaries` ship with their
+producers, and a test asserts their absence. [D10](PLAN-DELTAS.md) —
+`journal_mode` in a migration is a silent no-op; both pragmas moved to the
+connection and the runner now rejects the mistake.
+
+**Does not do.** No down-migrations: a schema change that needs one is a new
+file that undoes the old shape, because a reversible migration that has never
+been reversed is untested code. No cross-database consistency check — nothing
+verifies that two engineers' databases are at the same version before their
+outputs are compared.
