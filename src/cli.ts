@@ -26,7 +26,7 @@ import {
   runScipTypescript, runScipPython, documentAllowed,
 } from "./static/scip/runner.ts";
 import { scanRepo, renderScan } from "./static/treesitter/report.ts";
-import { indexRepo, type IndexReport } from "./index/pipeline.ts";
+import { indexRepo, linkCrossServiceRepos, type IndexReport } from "./index/pipeline.ts";
 import { renderIndexReport } from "./index/report.ts";
 
 const DEFAULT_DB = ".codeintel/graph.db";
@@ -541,13 +541,22 @@ async function cmdIndex(options: Options): Promise<number> {
       }));
     }
 
+    const shouldLink = options.force || reports.some((report) => !report.skipped);
+    const crossService = shouldLink
+      ? await linkCrossServiceRepos({ store, repos: config.repos, artifactDir: resolve(".codeintel") })
+      : { repos: 0, files: 0, requests: 0, unresolved: 0 };
+
     if (options.json) {
-      process.stdout.write(`${JSON.stringify(reports, null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify({ reports, crossService }, null, 2)}\n`);
       return 0;
     }
 
     process.stdout.write(`database: ${store.path}\n\n`);
     process.stdout.write(renderIndexReport(reports));
+    process.stdout.write(
+      `cross-service: ${crossService.requests} REQUESTS, ` +
+      `${crossService.unresolved} unresolved across ${crossService.files} files\n`,
+    );
 
     const integrity = store.verifyIntegrity();
     process.stdout.write(

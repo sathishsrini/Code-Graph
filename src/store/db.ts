@@ -338,6 +338,20 @@ export class FactStore {
     return Number(r.changes);
   }
 
+  /** Delete only selected edge types owned by one file. */
+  deleteEdgesByTypeAndProvenance(
+    fileId: number, types: EdgeType[], evidenceKinds: EvidenceKind[],
+  ): number {
+    if (types.length === 0 || evidenceKinds.length === 0) return 0;
+    const typeQ = types.map(() => "?").join(", ");
+    const evidenceQ = evidenceKinds.map(() => "?").join(", ");
+    const r = this.db.prepare(
+      `DELETE FROM edges WHERE file_id = ? AND type IN (${typeQ})
+       AND evidence_kind IN (${evidenceQ})`,
+    ).run(fileId, ...types, ...evidenceKinds);
+    return Number(r.changes);
+  }
+
   // -- routes ---------------------------------------------------------------
 
   /**
@@ -439,6 +453,14 @@ export class FactStore {
 
   deleteUnresolvedByProvenance(fileId: number): number {
     const r = this.db.prepare("DELETE FROM unresolved_calls WHERE file_id = ?").run(fileId);
+    return Number(r.changes);
+  }
+
+  /** Delete one unresolved channel without touching call/datastore gaps. */
+  deleteUnresolvedByProvenanceAndKind(fileId: number, kind: UnresolvedKind): number {
+    const r = this.db.prepare(
+      "DELETE FROM unresolved_calls WHERE file_id = ? AND kind = ?",
+    ).run(fileId, kind);
     return Number(r.changes);
   }
 

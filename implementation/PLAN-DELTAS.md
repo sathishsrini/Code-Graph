@@ -399,3 +399,72 @@ and the output distinguishes the two.
 
 **OPEN-5 is not closed.** Its real answer is "who provisions a working
 indexer", and on this platform nobody yet has.
+
+---
+
+## D21 — R20's rule pack is a YAML-subset loader, not a Semgrep run · applied · P1-T9
+
+**Plan says:** R20 — *"Semgrep/Opengrep rules mapping real helper names to
+`check_kind` values, maintained as a human-reviewed config file."* P1-T9's
+deliverable is *"`rules/check-kinds.yml` + runner."*
+
+**Change:** the rules live in `rules/check-kinds.yml` exactly as planned, but
+the loader is a small deterministic YAML-subset parser
+(`src/static/security-rules.ts`) rather than an invocation of Semgrep/Opengrep.
+
+**Why:** the requirement's substance is the reviewed config, and a Semgrep
+*binary* at this layer buys nothing P1-T10 does not need. Running Semgrep adds
+a heavy native dependency to a toolchain the stack deliberately keeps at
+`npm install` (see D11), while P1-T10 — the inline-check *detector* — is where
+a real engine's pattern language earns its keep. The loader is strict: it
+rejects malformed structure, classifies exact helper names only, and writes no
+facts, so the classification remains a human-reviewed map either way.
+
+**Also corrected:** P1-T9's own acceptance criterion — *"rules classify the
+corpus's real helper names"* — was not met at first. `serviceAuth`
+(41-kri-engine:77) is the engine's service-verifier and was missing from the
+pack; it is now classified under `auth`, and the test asserts it.
+
+---
+
+## D22 — P1-T7's first implementation produced zero correct edges · corrected · P1-T7
+
+**Plan says:** R31 / P1-T7 — call sites → base-URL resolution → path-template
+matching; *"every produced edge is `inferred`; every non-match logged with a
+`reason`; env-conditional destinations produce two candidate edges or one
+`unresolved`, never one silently-wrong edge."*
+
+**Measured, after the first implementation was marked done:** a corpus run
+reported **0 REQUESTS, 2 unresolved** — both wrong rows. The five URLs that
+matter (`server.js` L127/L176×2/L216/L298) were never even examined, because
+the resolver iterated **client calls** and hunted backwards for a URL. On this
+shaped code the only outbound call is `axios(axiosConfig)` *one function below*
+every real URL — the `forward()` wrapper — so no preceding-URL heuristic was
+reachable, and the nearest-preceding fallback then bound `axios()` at L68 to
+the route-registration string `'/*'` at L52. The three further defects:
+
+1. **Base identity is the env var, not the local name.** `BASE` (frontend)
+   was compared against `baseUrlEnvVars`, which declares
+   `NEXT_PUBLIC_API_BASE_URL`. The binding map that translates between them
+   was consulted *after* the check.
+2. **Port is not identity.** `serviceFromUrl` matched port alone, so a
+   non-loopback `api.stripe.com:3002` would have resolved to the engine.
+3. **The canonical ternary was silent.** `(PROCUREMENT_BASE_URL && …) ? … :
+   …` produced neither candidate edges nor gaps — the exact failure the plan
+   names.
+
+**Change (in P1-T7's module, no rewrite elsewhere):** the resolver now
+iterates **URL expressions**, attributes each to its enclosing function, and
+accepts it only when that function (or a wrapper it calls by name — the corpus
+`forward()`) contains an HTTP client call. Base resolution goes through the
+env-binding map first; host matching requires loopback + a declared port; bare
+`/…` literals are classified as path literals (route registrations,
+`startsWith` comparisons) unless they are inline arguments of a client call,
+so they neither resolve nor flood the gap log.
+
+**Re-measured on the corpus:** `40-kri-router` now yields **2 REQUESTS**
+(L216/L298 → `51-integration POST /api/v1/mail/send` — the one fully
+resolvable cross-service edge) and 4 honest gaps (L176's two ternary branches,
+L127's dynamic path, one unconsumed CORS origin). The frontend resolves
+`BASE` → router and reports its dynamic path honestly. Nine tests encode the
+corpus shapes the earlier fixtures did not.

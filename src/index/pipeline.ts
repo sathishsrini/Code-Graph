@@ -46,6 +46,8 @@ import {
   STATIC_EVIDENCE, type ChangeSet,
 } from "./incremental.ts";
 import { displayNameOf, symbolKind } from "../static/scip/symbol.ts";
+import { resolveCrossService, type RouteTarget } from "../derive/cross-service.ts";
+import { callSiteOwner } from "../static/treesitter/ingest.ts";
 
 export interface IndexOptions {
   store: FactStore;
@@ -70,6 +72,13 @@ export interface IndexReport {
   boot: { routes: number; chainEntries: number; unjoined: number; framework: number; handles: number } | null;
   /** Channels that produced nothing because their artifact was missing. */
   missingArtifacts: string[];
+}
+
+export interface CrossServiceReport {
+  repos: number;
+  files: number;
+  requests: number;
+  unresolved: number;
 }
 
 export async function indexRepo(options: IndexOptions): Promise<IndexReport> {
@@ -194,6 +203,86 @@ export async function indexRepo(options: IndexOptions): Promise<IndexReport> {
     repo: repo.name, change, purged, skipped: false, reason: plan.reason,
     symbols, calls, unresolvedCalls, treesitter, boot, missingArtifacts,
   };
+}
+
+/**
+ * Rebuild cross-service evidence after all repo-local routes exist.
+ *
+ * This is a separate pass because the linker input is global: indexing the
+ * router before the engine would otherwise make a valid target look absent.
+ * Only REQUESTS rows and cross_service gaps are replaced; CALLS, datastore,
+ * config, and boot evidence remain untouched.
+ */
+export async function linkCrossServiceRepos(options: {
+  store: FactStore;
+  repos: RepoConfig[];
+  artifactDir: string;
+}): Promise<CrossServiceReport> {
+  const targets = (options.store.raw().prepare(
+    `SELECT n.id AS node_id, r.service_name, r.method, r.url
+       FROM routes r JOIN nodes n ON n.id = r.node_id
+      ORDER BY r.service_name, r.method, r.url`,
+  ).all() as Array<{ node_id: number; service_name: string; method: string; url: string }>)
+    .map((r): RouteTarget => ({
+      nodeId: r.node_id, service: r.service_name, method: r.method, url: r.url,
+    }));
+
+  const report: CrossServiceReport = { repos: 0, files: 0, requests: 0, unresolved: 0 };
+
+  for (const repo of options.repos) {
+    const repoId = options.store.upsertRepo(repo.name, repo.rootPath, repo.serviceName);
+    const runId = options.store.startRun(repoId, "static", "code-intel/P1-T7", "");
+    const writer = new GraphWriter(options.store, runId, repoId, {
+      localPackages: new Set([repo.name, repo.serviceName]),
+    });
+    const scipPath = resolve(join(options.artifactDir, "scip", `${repo.name}.scip`));
+    const index = existsSync(scipPath) ? new ScipProtobufReader().read(scipPath) : null;
+    const ranges = index ? buildDefinitionRanges(index) : [];
+
+    for (const file of enumerateFiles(repo)) {
+      if (!grammarFor(file.relativePath)) continue;
+      const fileRow = options.store.getFile(repoId, file.relativePath);
+      if (!fileRow) continue;
+      report.files += 1;
+      options.store.deleteEdgesByTypeAndProvenance(fileRow.id, ["REQUESTS"], ["treesitter"]);
+      options.store.deleteUnresolvedByProvenanceAndKind(fileRow.id, "cross_service");
+
+      const text = readFileSync(file.absolutePath, "utf8");
+      const parsed = await parseFile(file.relativePath, text);
+      if (!parsed) continue;
+      const findings = extract(parsed);
+      const resolved = resolveCrossService({
+        repo, findings, targets, repos: options.repos, source: text,
+      });
+
+      for (const link of resolved.requests) {
+        const owner = callSiteOwner(ranges, findings.functions, file.relativePath, link.line);
+        const source = owner.symbol
+          ? writer.symbolNode(owner.symbol).id
+          : writer.node(ref.file(repo.name, file.relativePath));
+        writer.edgeById(source, link.routeNodeId, "REQUESTS", "inferred", "treesitter", {
+          fileId: fileRow.id, line: link.line, detail: link.detail,
+        });
+        report.requests += 1;
+      }
+
+      for (const gap of resolved.unresolved) {
+        const owner = callSiteOwner(ranges, findings.functions, file.relativePath, gap.line);
+        const source = owner.symbol
+          ? writer.symbolNode(owner.symbol).id
+          : writer.node(ref.file(repo.name, file.relativePath));
+        options.store.insertUnresolved({
+          srcNodeId: source, kind: "cross_service", targetHint: gap.targetHint,
+          reason: gap.reason, fileId: fileRow.id, line: gap.line, runId,
+        });
+        report.unresolved += 1;
+      }
+    }
+    options.store.finishRun(runId);
+    report.repos += 1;
+  }
+
+  return report;
 }
 
 function langOf(path: string): string {

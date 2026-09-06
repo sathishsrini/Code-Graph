@@ -1,0 +1,20 @@
+# Reviewed security helper vocabulary (task P1-T9, R20).
+#
+# Exact names are intentional. A function name is only a candidate check; the
+# later inline detector still records inferred evidence and never upgrades it
+# to boot certainty. Add a helper here only after reviewing its implementation.
+check_kinds:
+  auth:
+    - checkUserAuth
+    - verifyToken
+    - requireAuth
+    - serviceAuth
+  tenant:
+    - requireTenant
+    - checkTenant
+  rbac:
+    - requireRole
+    - checkPermission
+  ratelimit:
+    - rateLimit
+    - enforceRateLimit

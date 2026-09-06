@@ -64,13 +64,13 @@ as unnamed locals.
 |---|---|---|
 | P1-T1 full schema + migrations | `887cfcc` | **done** |
 | P1-T2 normalizer | — | not started |
-| P1-T3 scip-python | `PENDING3` | **wired, blocked upstream** |
+| P1-T3 scip-python | `ec5e845` | **wired, blocked upstream** |
 | P1-T4 FastAPI boot adapter | `79fb2e1` | **done** |
-| P1-T5 Next.js static indexing | — | not started |
+| P1-T5 Next.js static indexing | — | **done** |
 | P1-T6 tree-sitter pass | `99cf028` | **done** |
-| P1-T7 cross-service linker | — | not started |
+| P1-T7 cross-service linker | — | **done** |
 | P1-T8 route chain expander | `59972c5` | **done** |
-| P1-T9 Semgrep check_kind pack | — | not started |
+| P1-T9 Semgrep check_kind pack | — | **done** |
 | P1-T10 inline auth detector | — | not started |
 | P1-T11 incremental indexing | `59972c5` | **done** |
 | P1-T12 `endpoint_flow` | — | not started |
@@ -265,3 +265,78 @@ to stop.
 **Does not do.** OPEN-5 stays open — its real question was who provisions a
 working indexer, and on this platform nobody has. The venv decision is
 implemented (`pythonBin` is declared, not discovered) but unexercised.
+
+## P1-T5 — Next.js static indexing
+
+**Shipped.** Formal coverage of the Next.js framework variant through reuse of
+the shared SCIP runner. `config/repos.json` declares `framework: "nextjs"` with
+static includes (`app/**`, `lib/**`) and generated-content exclusion (`.next/**`,
+`node_modules/**`). `src/static/scip/runner.ts` generates a temporary tsconfig
+with `erasableSyntaxOnly` and applies `documentAllowed` to filter by include/exclude.
+`src/cli.ts` intentionally rejects `boot dump` for Next.js.
+
+**Verified.** Typecheck clean, all 225 tests pass. Dedicated tests in
+`tests/next-indexing.test.ts` assert: static-only configuration, generated
+content exclusion, include/exclude behavior, and that the declared file set is
+not accidentally broadened. Existing `tests/scip-runner.test.ts` confirms glob
+matching and exclusion invariants for Next.js repos.
+
+**Does not do.** No route extraction for Next.js — boot reflection is scoped to
+Fastify and FastAPI. The live `scip-typescript` run against external fixtures
+depends on those fixtures being mounted and the indexer being installed.
+
+## P1-T7 — cross-service linker
+
+**Shipped.** A pure resolver (`src/derive/cross-service.ts`) that converts
+tree-sitter HTTP call sites into provenance-backed cross-service edges.
+Resolved after an independent review caught that the first implementation
+produced **zero correct edges** on the corpus (see [D22](PLAN-DELTAS.md)).
+The corrected design iterates **URL expressions**, attributes each to its
+enclosing function, and accepts it only when that function — or a wrapper it
+calls by name, such as the corpus `forward()` — contains an HTTP client call.
+Base URL resolution goes through the env-binding map (env var identity, not
+local variable name); host matching requires a loopback host plus a declared
+port; the env-conditional ternary produces two candidate edges or honest gaps,
+never one silently-wrong edge; bare `/…` literals are path literals, not URLs.
+
+Store/pipeline integration wired: `src/index/pipeline.ts` now exports
+`linkCrossServiceRepos`, which runs after all repo-local indexing and writes
+`REQUESTS` edges via `GraphWriter` and cross-service gaps via
+`deleteEdgesByTypeAndProvenance` / `deleteUnresolvedByProvenanceAndKind`.
+`FactStore` gained `deleteEdgesByTypeAndProvenance` and
+`deleteUnresolvedByProvenanceAndKind` to scope incremental deletion to only
+cross-service evidence.
+
+**Verified.** Typecheck clean, all 230 tests pass. Corpus run: `40-kri-router`
+yields **2 REQUESTS** (L216/L298 → `51-integration POST /api/v1/mail/send`)
+and 4 honest gaps (L176's two ternary branches, L127's dynamic path, one
+unconsumed CORS origin); engine 0, integration and frontend report their base
+URLs and dynamic paths honestly. Nine corpus-shaped tests encode these shapes.
+
+**Deviations.** [D13](PLAN-DELTAS.md) an HTTP call site is not an edge until
+P1-T7 resolves it (deferred from P1-T6). [D22](PLAN-DELTAS.md) records the
+zero-edges correction above.
+
+**Does not do.** No semantic URL normalization beyond the canonical route key.
+No resolution of calls to services outside the declared `repos.json` set. No
+bearer-token or OAuth inference — that is P1-T10's scope.
+
+## P1-T9 — security check-kind rule pack
+
+**Shipped.** A reviewed, deterministic rule pack for classifying security
+helper calls. `rules/check-kinds.yml` contains the reviewed vocabulary. A
+deterministic YAML parser in `src/static/security-rules.ts` loads and classifies
+exact helper names. The parser rejects malformed rule structure, skips comments,
+and the classifier only matches exact helper names (no partial matches).
+
+**Verified.** Typecheck clean, all 230 tests pass. Dedicated tests in
+`tests/security-rules.test.ts` cover: valid YAML loading, exact match
+classification, unknown helpers returning null, and malformed structure
+rejection. The corpus's real helper names are classified — including
+`serviceAuth` (41-kri-engine:77, the engine's service verifier) under `auth`.
+
+**Does not do.** The initial helper list is based on the validation corpus and
+must be reviewed against production helper implementations before P1-T10 inline
+security detection uses it. No evidence or database writes from this module —
+that is the inline detector's job. See [D21](PLAN-DELTAS.md): the pack ships as
+a deterministic YAML-subset loader, not a Semgrep/Opengrep invocation.
