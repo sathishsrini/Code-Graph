@@ -395,4 +395,73 @@ Stated because the corpus is unrepresentative and the plan says so (§6 OPEN-3):
 
 ---
 
+## M8 — `scip-python` does not work on this platform
+
+**Date**: 2026-09-07 · **Task**: P1-T3 · **Gate**: OPEN-5 · **Version**: `@sourcegraph/scip-python@0.6.6` (latest)
+
+Two independent failures, in order.
+
+### 1. It will not start on Windows
+
+```
+src/virtualenv/PythonEnvironment.ts:4
+  const pathSepRegex = new RegExp(path.sep, 'g');
+SyntaxError: Invalid regular expression: /\/g: \ at end of pattern
+```
+
+`path.sep` is `\` on Windows and a lone backslash is not a valid pattern. It
+is a module-level constant, so this throws at **import** time — before any
+argument is read. No flag, environment or project layout avoids it, and every
+published version (0.1.3 through 0.6.6) carries it.
+
+`scripts/patch-scip-python.mjs` escapes the separator in the shipped bundle.
+Idempotent, verified after writing, and a no-op on POSIX. Wired as
+`postinstall`. Delta D19.
+
+### 2. Past that, it emits an empty index
+
+| Target | Result |
+|---|---|
+| `51-integration` (as configured) | 88-byte index — metadata header only, **0 documents** |
+| `51-integration` with `--target-only main.py` | 0 documents |
+| `main.py` copied to a path with no `###` | 0 documents |
+| A synthetic package (`__init__.py`, one import, two functions) | 0 documents |
+
+So it is neither the `###` in the corpus path nor the loose-module layout that
+OPEN-5 anticipated. It exits **0** while writing an index describing nothing.
+
+A secondary failure appears in its log and is probably related:
+
+```
+Python script failed with code 9009: Python was not found
+Warning: Package discovery failed - pip show timed out after 1 minute.
+```
+
+`python` resolves correctly from `cmd` on this machine (`C:\Python314\python.exe`),
+so the indexer is not inheriting a usable environment. Prepending the declared
+`pythonBin` directory to the child's PATH did not change the document count.
+
+### What was shipped anyway
+
+The channel is wired end to end — `runScipPython`, `scip index --repo` dispatch
+on `lang`, and the ingest path is shared with TypeScript because both produce
+SCIP. It will work unchanged wherever a working indexer exists (Linux, CI, WSL).
+
+Two guards were added because of what this exposed:
+
+1. **`ok` checks the output size, not just the exit code.** An indexer that
+   exits 0 having written 88 bytes is not a success, and reporting it as one is
+   the exact failure this project exists to stop shipping.
+2. **`index` names the missing artifact by path** rather than showing a Python
+   service with zero symbols as though that were a finding.
+
+### Consequence for the graph, stated plainly
+
+`51-integration` currently contributes routes, chain entries and tree-sitter
+findings, and **no symbols and no call edges**. Its six chain entries are
+reported `unjoined`. That is a missing channel, not an empty service.
+
+
+---
+
 **Last Updated**: 2026-09-07

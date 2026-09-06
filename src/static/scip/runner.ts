@@ -14,8 +14,9 @@
 // through if the indexer widens its own set.
 
 import { spawnSync } from "node:child_process";
-import { writeFileSync, rmSync, existsSync, mkdirSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { writeFileSync, rmSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { join, resolve, dirname, delimiter } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { RepoConfig } from "../../config/repos.ts";
 
 /** Name of the throwaway tsconfig written into the target repo. */
@@ -178,3 +179,87 @@ export function runScipTypescript(
     rmSync(tsconfigPath, { force: true });
   }
 }
+
+/**
+ * Run `scip-python` over one repo (P1-T3, R18, OPEN-5).
+ *
+ * Unlike `scip-typescript` there is no config file to generate: the indexer
+ * walks the workspace and its `--target-only` takes a single path. So the
+ * declared file set is enforced by the SECOND gate only — `documentAllowed`,
+ * applied to every document at ingest — which is the same defence that catches
+ * a TypeScript indexer widening its own set (delta D6).
+ *
+ * `pythonBin` is passed through rather than discovered. OPEN-5's decision is
+ * that the indexing interpreter is declared and need not match the one the
+ * service runs in production; the directory containing it is prepended to the
+ * child's PATH because the indexer shells out to a bare `python`.
+ *
+ * KNOWN BROKEN ON WINDOWS at 0.6.6 — see docs/measurements.md M8. This runner
+ * is correct and the channel is wired end to end; the indexer emits an empty
+ * index on this platform. `index` reports the missing artifact by name rather
+ * than showing a Python service with zero symbols as if that were a finding.
+ */
+export function runScipPython(
+  repo: RepoConfig,
+  outputPath: string,
+  options: { projectVersion?: string } = {},
+): IndexResult {
+  const out = resolve(outputPath);
+  mkdirSync(dirname(out), { recursive: true });
+
+  const env = { ...process.env };
+  // The indexer shells out to a bare `python`, and this repo's own
+  // node_modules/.bin is only on PATH when invoked through an npm script.
+  // Both are prepended so the command works from a plain `node src/cli.ts`.
+  const extraPath = [
+    repo.pythonBin ? dirname(resolve(repo.pythonBin)) : null,
+    localBinDir(),
+  ].filter((p): p is string => p !== null);
+  if (extraPath.length > 0) {
+    env.PATH = `${extraPath.join(delimiter)}${delimiter}${env.PATH ?? ""}`;
+  }
+
+  const started = Date.now();
+  // `--target-only` is passed only when the repo declares exactly one include
+  // that is a directory: given a single .py file it yields an empty index,
+  // which is worse than indexing the workspace and filtering afterwards.
+  const targetOnly = repo.include.length === 1 && !repo.include[0]!.includes(".")
+    ? ` --target-only ${quote(join(repo.rootPath, repo.include[0]!.replace(/\/\*+$/, "")))}`
+    : "";
+
+  const command =
+    `scip-python index --cwd ${quote(repo.rootPath)}` +
+    ` --project-name ${quote(repo.serviceName)}` +
+    ` --project-version ${quote(options.projectVersion ?? "0.0.0")}` +
+    `${targetOnly} --output ${quote(out)}`;
+
+  const r = spawnSync(command, {
+    cwd: repo.rootPath, encoding: "utf8", env, shell: true, timeout: 600_000,
+  });
+
+  return {
+    ok: r.status === 0 && existsSync(out) && statSync(out).size > EMPTY_INDEX_BYTES,
+    outputPath: out,
+    tsconfigPath: "",
+    tsconfig: {},
+    stdout: r.stdout ?? "",
+    stderr: r.stderr ?? (r.error ? r.error.message : ""),
+    status: r.status,
+    durationMs: Date.now() - started,
+  };
+}
+
+/** This project's own `node_modules/.bin`, for spawns that run in another cwd. */
+function localBinDir(): string | null {
+  const dir = resolve(dirname(fileURLToPath(import.meta.url)), "../../../node_modules/.bin");
+  return existsSync(dir) ? dir : null;
+}
+
+/**
+ * A SCIP index containing only its metadata header is ~88 bytes.
+ *
+ * `ok` checks the size because `scip-python` exits 0 after writing one of
+ * these. An exit code alone would report success on an index describing
+ * nothing, which is the failure mode this project exists to stop shipping.
+ */
+const EMPTY_INDEX_BYTES = 256;

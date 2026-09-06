@@ -17,9 +17,12 @@
     "lint": "tsc --noEmit",
     "audit:tokens": "npx claude-token-optimizer audit --json",
     "db:bootstrap": "node src/cli.ts db bootstrap",
-    "db:reset": "node src/cli.ts db bootstrap --reset"
+    "db:reset": "node src/cli.ts db bootstrap --reset",
+    "postinstall": "node scripts/patch-scip-python.mjs",
+    "index": "node src/cli.ts index"
   },
   "devDependencies": {
+    "@sourcegraph/scip-python": "^0.6.6",
     "@types/node": "^22.0.0",
     "fastify": "^4.29.1",
     "fastify-overview": "^3.9.0",

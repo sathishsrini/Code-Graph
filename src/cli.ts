@@ -22,7 +22,9 @@ import { deriveCalls, dedupe, createFsSourceProvider } from "./derive/calls.ts";
 import { readBootDump, findRoute } from "./boot/dump.ts";
 import { readFastapiDump, toBootDump } from "./boot/fastapi.ts";
 import { buildFlow, renderFlow } from "./query/flow.ts";
-import { runScipTypescript, documentAllowed } from "./static/scip/runner.ts";
+import {
+  runScipTypescript, runScipPython, documentAllowed,
+} from "./static/scip/runner.ts";
 import { scanRepo, renderScan } from "./static/treesitter/report.ts";
 import { indexRepo, type IndexReport } from "./index/pipeline.ts";
 import { renderIndexReport } from "./index/report.ts";
@@ -378,13 +380,11 @@ function defaultIndexPath(repo: RepoConfig): string {
 function cmdScipIndex(options: Options): number {
   const repo = resolveRepo(options);
   if (typeof repo === "number") return repo;
-  if (repo.lang === "py") {
-    process.stderr.write(`scip index: ${repo.name} is Python; scip-python is P1-T3.\n`);
-    return 2;
-  }
 
   const out = options.out || defaultIndexPath(repo);
-  const result = runScipTypescript(repo, out, { maxOldSpaceMb: 8192 });
+  const result = repo.lang === "py"
+    ? runScipPython(repo, out)
+    : runScipTypescript(repo, out, { maxOldSpaceMb: 8192 });
 
   if (options.json) {
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
@@ -396,12 +396,22 @@ function cmdScipIndex(options: Options): number {
     `root       : ${repo.rootPath}\n` +
     `include    : ${repo.include.join(", ") || "(everything)"}\n` +
     `exclude    : ${repo.exclude.join(", ") || "(nothing)"}\n` +
-    `tsconfig   : generated, then removed\n` +
+    `indexer    : ${repo.lang === "py" ? "scip-python" : "scip-typescript"}\n` +
+    `file set   : ${repo.lang === "py"
+      ? "enforced at ingest — this indexer takes no config"
+      : "generated tsconfig, then removed"}\n` +
     `output     : ${result.outputPath}\n` +
     `duration   : ${result.durationMs} ms\n`,
   );
   if (!result.ok) {
-    process.stderr.write(`\nscip index FAILED (status ${result.status})\n${result.stderr}\n`);
+    // An indexer can exit 0 and still write an index describing nothing —
+    // `scip-python` does exactly that on Windows (measurements M8). Reporting
+    // the exit code alone would call that a success.
+    const empty = result.status === 0 && existsSync(result.outputPath);
+    process.stderr.write(
+      `\nscip index FAILED (status ${result.status}${empty ? ", but wrote an EMPTY index" : ""})\n` +
+      `${result.stderr || result.stdout}\n`,
+    );
     return 1;
   }
   process.stdout.write(`status     : ok\n`);

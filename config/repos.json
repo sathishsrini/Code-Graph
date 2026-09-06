@@ -43,7 +43,8 @@
       "baseUrlEnvVars": [],
       "port": 8000,
       "tsconfig": null,
-      "pythonBin": null
+      "//pythonBin": "OPEN-5: the INDEXING interpreter, declared not discovered. It need not match the one the service runs in production. Its directory is prepended to the indexer's PATH because scip-python shells out to a bare `python`.",
+      "pythonBin": "C:/Python314/python.exe"
     },
     {
       "name": "60-kri-next",

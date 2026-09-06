@@ -64,15 +64,15 @@ as unnamed locals.
 |---|---|---|
 | P1-T1 full schema + migrations | `887cfcc` | **done** |
 | P1-T2 normalizer | — | not started |
-| P1-T3 scip-python | — | not started |
+| P1-T3 scip-python | `PENDING3` | **wired, blocked upstream** |
 | P1-T4 FastAPI boot adapter | `79fb2e1` | **done** |
 | P1-T5 Next.js static indexing | — | not started |
 | P1-T6 tree-sitter pass | `99cf028` | **done** |
 | P1-T7 cross-service linker | — | not started |
-| P1-T8 route chain expander | `PENDING8` | **done** |
+| P1-T8 route chain expander | `59972c5` | **done** |
 | P1-T9 Semgrep check_kind pack | — | not started |
 | P1-T10 inline auth detector | — | not started |
-| P1-T11 incremental indexing | `PENDING8` | **done** |
+| P1-T11 incremental indexing | `59972c5` | **done** |
 | P1-T12 `endpoint_flow` | — | not started |
 | P1-T13 `impact` | — | not started |
 | P1-T14 `security_path` | — | not started |
@@ -236,3 +236,32 @@ emits no per-file index. Re-indexing does not re-run `scip index` or
 `boot dump` — artifacts are read, not built, so indexing a service never
 requires booting it. There is no reverse migration for a node whose key format
 changes.
+
+## P1-T3 — scip-python pipeline
+
+**Shipped.** `runScipPython` in `src/static/scip/runner.ts`, `scip index`
+dispatching on `repos.json`'s `lang`, `pythonBin` declared for
+`51-integration`, and `scripts/patch-scip-python.mjs` wired as `postinstall`.
+Ingest is the shared SCIP path — both indexers emit SCIP, so nothing downstream
+knows which language it came from.
+
+**Blocked, not done.** `@sourcegraph/scip-python@0.6.6` crashes at import on
+Windows, and once patched past that it exits 0 having written an 88-byte index
+with zero documents — on the corpus, on a clean path, and on a synthetic
+package. Full evidence in [`docs/measurements.md` M8](../docs/measurements.md);
+decisions in [D19](PLAN-DELTAS.md) and [D20](PLAN-DELTAS.md).
+
+**What that leaves.** `51-integration` contributes 3 routes, 9 chain entries and
+its tree-sitter findings, and **no symbols and no call edges**. Six chain
+entries report `unjoined` and `index` names the missing artifact by path. A
+missing channel, not an empty service — and the output says which.
+
+**Two guards worth keeping regardless of the blockage.** `ok` now checks output
+size rather than exit code alone, and a missing artifact is reported by name.
+An indexer that exits 0 after writing a metadata header is not a success, and
+reporting it as one is the confident-wrong-answer failure this project exists
+to stop.
+
+**Does not do.** OPEN-5 stays open — its real question was who provisions a
+working indexer, and on this platform nobody has. The venv decision is
+implemented (`pythonBin` is declared, not discovered) but unexercised.

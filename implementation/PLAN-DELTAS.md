@@ -350,3 +350,52 @@ the value it found and the fix (*re-run `boot dump`*).
 
 A boot dump is a build artifact that outlives the adapter that wrote it, so
 this will happen again; the point is that it costs one line to diagnose.
+
+---
+
+## D19 — `scip-python` is patched at install time, on Windows · applied · P1-T3
+
+**Plan says:** R18 — `scip-python index` for the Python service, venv active.
+
+**Measured:** every published version crashes at import on Windows —
+`new RegExp(path.sep, 'g')` where `path.sep` is `\`. Nothing avoids it, because
+it is a module-level constant evaluated before any argument is read.
+[`docs/measurements.md` M8](../docs/measurements.md).
+
+**Change:** `scripts/patch-scip-python.mjs` escapes the separator in the
+shipped bundle. Idempotent, verified after writing, a no-op on POSIX, wired as
+`postinstall`. It refuses to modify anything if the known-broken pattern is
+absent, and says why — a silent no-op there would reappear as an unexplained
+crash at index time.
+
+**Delete this** the day upstream fixes it; the script's "pattern is gone"
+branch is the signal.
+
+---
+
+## D20 — the Python channel is wired and blocked, and says so · applied · P1-T3
+
+Past the startup crash, `scip-python` **exits 0 having written an 88-byte index
+with zero documents** — on the corpus, on a clean path, and on a synthetic
+package. Neither the `###` in the corpus path nor the loose-module layout that
+OPEN-5 anticipated is the cause. [M8](../docs/measurements.md).
+
+**What shipped:** `runScipPython`, `scip index` dispatching on `repos.json`'s
+`lang`, `pythonBin` declared and prepended to the child's PATH, and the shared
+SCIP ingest path. It works unchanged wherever a working indexer exists.
+
+**Two guards this exposed**, both of which outlive the blockage:
+
+1. **`ok` checks the output size, not only the exit code.** An indexer that
+   exits 0 after writing a metadata header is not a success, and calling it one
+   is exactly the class of confident-wrong answer this project exists to stop.
+2. **`index` names the missing artifact by path**, rather than presenting a
+   Python service with zero symbols as though that were a finding.
+
+**Consequence, stated:** `51-integration` contributes routes, chain entries and
+tree-sitter findings, and **no symbols and no call edges**. Its six chain
+entries report as `unjoined`. That is a missing channel, not an empty service,
+and the output distinguishes the two.
+
+**OPEN-5 is not closed.** Its real answer is "who provisions a working
+indexer", and on this platform nobody yet has.
