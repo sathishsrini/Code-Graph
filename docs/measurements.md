@@ -79,21 +79,55 @@ holds; only its input field changes, from `enclosingSymbol` to `enclosingRange`.
 
 ## M3 — `CALLS` false-positive rate
 
-**Task**: P0-T7 · **Status**: ⬜ not yet measured — P0-T6 must land first.
+**Task**: P0-T7 · **Gate**: R70, ≤10% · **Date**: 2026-09-06
+**Corpus**: `60-kri-next` — chosen because it is the only `strict: true`
+TypeScript in the fixtures, so the number measures the derivation rather than
+the fixture (plan §6 OPEN-3).
 
-**Gate**: R70 — manually verify 50 sampled `CALLS` edges against source. Above
-~10% the graph is untrustworthy and the project should stop and fix the filters
-rather than build on it.
+```bash
+node src/cli.ts derive calls --index .codeintel/scip/60-kri-next.scip --sample 50
+```
 
-> ⚠️ Measure this on `60-kri-next` (real, `strict: true` TypeScript), **not** on
-> `40-kri-router`. The router's live code is untyped CommonJS, where SCIP
-> resolution is inherently weaker; a bad number there would say more about the
-> fixture than about the derivation, and could trigger the plan's
-> abandon-and-fork rule for the wrong reason. See plan §6 OPEN-3.
+| Revision | Unique edges | Sample | False positives | Rate | Verdict |
+|---|---|---|---|---|---|
+| Descriptor filters only | 969 | 12 | 10 | **~83%** | ❌ fails the gate |
+| **+ call-site check** | **166** | **50** | **0** | **0%** | ✅ **passes** |
 
-| Date | Sample | False positives | Rate | Notes |
-|---|---|---|---|---|
-| — | — | — | — | pending P0-T6 |
+### What the first revision got wrong
+
+Filtering on the SCIP symbol grammar alone let through everything that *looks*
+like an identifier reference: JSX intrinsic elements (`<div>`, `<main>`), JSX
+attributes (`value`, `htmlFor`), property reads (`process.env`), type members
+(`Column#typeLiteral0:key`) and destructured prop names. Ten of twelve sampled
+edges were not calls.
+
+### The fix
+
+The decisive signal is not in the index at all: **is the identifier followed by
+a call?** The sources are on disk, so `isCallSite()` reads forward from the
+occurrence's end and accepts `foo(`, `foo (`, `foo<T>(` and a call broken across
+lines, rejecting everything else. That single check removed 1,007 references and
+took the rate to zero.
+
+### A false negative the same work uncovered
+
+Removing an over-eager `parameterOrMeta` filter recovered **all 11
+frontend→backend `api.get`/`api.post` call sites**, which had been silently
+dropped. `scip-typescript` emits object-literal properties as *meta*
+descriptors — `api.get(...)` resolves to ``lib/`api.ts`/get0:`` — so excluding
+meta removed exactly the edges the cross-service linker (P1-T7) will depend on.
+Ground truth is 11 call sites; 11 are now captured.
+
+**Lesson worth keeping:** measure false negatives, not only false positives. A
+filter that scores 0% FP by dropping the edges you care about is worse than
+useless, and the FP metric alone would have called it a success.
+
+### Known limitation, not counted as a false positive
+
+Arrow functions inside an object literal get no `enclosingRange`, so calls made
+inside them attribute to the enclosing *module* rather than the arrow. Affects 6
+of 166 edges (`api.get`/`post`/`put` → `request`). The edge is real; the caller
+is coarse. Revisit if `route_chain` attribution needs it.
 
 ---
 

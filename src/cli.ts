@@ -13,6 +13,8 @@ import {
   ScipProtobufReader, summarize, roleNames, syntaxKindLabel,
   ROLE_DEFINITION, hasRole,
 } from "./static/scip/reader.ts";
+import { displayNameOf } from "./static/scip/symbol.ts";
+import { deriveCalls, dedupe } from "./derive/calls.ts";
 
 const DEFAULT_DB = ".codeintel/graph.db";
 const DEFAULT_CONFIG = "config/repos.json";
@@ -26,6 +28,7 @@ COMMANDS
   db bootstrap        Create or verify the SQLite fact store
   config check        Validate config/repos.json and print the resolved repos
   scip dump           Summarise a .scip index and sample its symbols
+  derive calls        Derive CALLS edges from a .scip index (P0-T6)
   help                Show this message
 
 OPTIONS
@@ -115,6 +118,13 @@ function main(argv: string[]): number {
         return 2;
       }
       return cmdScipDump(options);
+
+    case "derive":
+      if (sub !== "calls") {
+        process.stderr.write(`unknown subcommand: derive ${sub}\n\n${USAGE}`);
+        return 2;
+      }
+      return cmdDeriveCalls(options);
 
     default:
       process.stderr.write(`unknown command: ${command}\n\n${USAGE}`);
@@ -248,6 +258,61 @@ function cmdScipDump(options: Options): number {
       );
       shown += 1;
       if (shown >= options.sample) break outer;
+    }
+  }
+
+  return 0;
+}
+
+function cmdDeriveCalls(options: Options): number {
+  if (!options.index) {
+    process.stderr.write("derive calls requires --index <path to .scip>\n");
+    return 2;
+  }
+
+  const index = new ScipProtobufReader().read(options.index);
+  const { calls, stats } = deriveCalls(index);
+  const unique = dedupe(calls);
+
+  if (options.json) {
+    process.stdout.write(JSON.stringify({ stats, calls: unique }, null, 2) + "\n");
+    return 0;
+  }
+
+  process.stdout.write(
+    `index      : ${resolve(options.index)}\n` +
+    `documents  : ${stats.documents}\n` +
+    `occurrences: ${stats.occurrences} (${stats.definitions} defs, ${stats.references} refs)\n` +
+    `bodies     : ${stats.bodies}   (definitions with an enclosingRange)\n\n` +
+    `CALLS emitted : ${stats.emitted}  (${unique.length} unique)\n` +
+    `  certain     : ${stats.certain}\n` +
+    `  inferred    : ${stats.inferred}\n` +
+    `  module scope: ${stats.fromModuleScope}  (caller is a module, not a function)\n\n` +
+    `skipped references:\n`,
+  );
+  const skippedRows = Object.entries(stats.skipped).sort((a, b) => b[1] - a[1]);
+  for (const [reason, n] of skippedRows) {
+    process.stdout.write(`  ${String(n).padStart(5)}  ${reason}\n`);
+  }
+  const totalSkipped = skippedRows.reduce((s, [, n]) => s + n, 0);
+  process.stdout.write(`  ${String(totalSkipped).padStart(5)}  TOTAL\n`);
+
+  // Sample for the P0-T7 manual verification.
+  const limit = options.sample;
+  if (limit > 0) {
+    process.stdout.write(`\nsample of ${Math.min(limit, unique.length)} CALLS edges:\n`);
+    const step = Math.max(1, Math.floor(unique.length / limit));
+    let shown = 0;
+    for (let i = 0; i < unique.length && shown < limit; i += step) {
+      const c = unique[i]!;
+      process.stdout.write(
+        `\n  ${c.filePath}:${c.line}  [${c.confidence}]` +
+        `${c.fromModuleScope ? " (module scope)" : ""}\n` +
+        `    ${displayNameOf(c.srcSymbol)}  ->  ${displayNameOf(c.dstSymbol)}\n` +
+        `    src: ${c.srcSymbol}\n` +
+        `    dst: ${c.dstSymbol}\n`,
+      );
+      shown += 1;
     }
   }
 
