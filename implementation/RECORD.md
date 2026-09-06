@@ -65,14 +65,14 @@ as unnamed locals.
 | P1-T1 full schema + migrations | `887cfcc` | **done** |
 | P1-T2 normalizer | — | not started |
 | P1-T3 scip-python | — | not started |
-| P1-T4 FastAPI boot adapter | `PENDING4` | **done** |
+| P1-T4 FastAPI boot adapter | `79fb2e1` | **done** |
 | P1-T5 Next.js static indexing | — | not started |
 | P1-T6 tree-sitter pass | `99cf028` | **done** |
 | P1-T7 cross-service linker | — | not started |
-| P1-T8 route chain expander | — | not started |
+| P1-T8 route chain expander | `PENDING8` | **done** |
 | P1-T9 Semgrep check_kind pack | — | not started |
 | P1-T10 inline auth detector | — | not started |
-| P1-T11 incremental indexing | — | not started |
+| P1-T11 incremental indexing | `PENDING8` | **done** |
 | P1-T12 `endpoint_flow` | — | not started |
 | P1-T13 `impact` | — | not started |
 | P1-T14 `security_path` | — | not started |
@@ -197,3 +197,42 @@ never re-derived — correct, but untested against a nested router. OPEN-6 holds
 dependencies are reported and are **zero on this corpus** — `51-integration`
 compares a bearer token inside the handler, so it is authenticated and reports
 no security dependency, exactly as `POST /api/v1/po` does on the router.
+
+## P1-T8 + P1-T11 — route chain expander, and the indexing pipeline
+
+Shipped together because neither is usable alone: the expander needs symbols in
+the store, and the pipeline has nothing to write without it.
+
+**Shipped.** `src/derive/routes.ts` (boot artifact -> `routes`, `route_chain`,
+`HANDLES`), `src/index/incremental.ts` (hash, changed set, provenance delete)
+and `src/index/pipeline.ts` (`index` command: hash -> purge -> SCIP ->
+tree-sitter -> boot, in that order and for stated reasons).
+
+**Verified — full corpus, fresh database:**
+
+| Repo | symbols | calls | routes | chain | HANDLES | unjoined |
+|---|---|---|---|---|---|---|
+| `40-kri-router` | 171 | 89 | 23 | 77 | 69 | 0 |
+| `41-kri-engine` | 443 | 257 | 21 | 71 | 63 | 0 |
+| `51-integration` | 0 | 0 | 3 | 9 | 0 | **6** |
+| `60-kri-next` | 175 | 150 | — | — | — | — |
+
+1,452 edges, 883 nodes, `foreign_key_check` and `integrity_check` clean.
+A second `index` with nothing changed does no work and says so per repo.
+
+`51-integration`'s six unjoined entries are correct and are the visible shape
+of a missing channel: `scip-python` is P1-T3, so no symbols exist to join to.
+The report names the missing artifact by path rather than showing a zero.
+
+**Deviations.** [D17](PLAN-DELTAS.md) the generated tsconfig indexed *nothing*
+on `60-kri-next` — D6 from the other direction, and invisible because a stale
+`.scip` made every downstream number look plausible.
+[D18](PLAN-DELTAS.md) a stale boot artifact surfaced as an unattributed SQL
+bind error; `readBootDump` now validates and names the route.
+
+**Does not do.** R29 is coarse: any changed file re-runs the whole repo's
+derivations, because `CALLS` comes from a whole-index interval walk and SCIP
+emits no per-file index. Re-indexing does not re-run `scip index` or
+`boot dump` — artifacts are read, not built, so indexing a service never
+requires booting it. There is no reverse migration for a node whose key format
+changes.

@@ -86,10 +86,33 @@ export interface BootDump {
   warnings: string[];
 }
 
+const CHAIN_ORIGINS = new Set<string>(["scope", "route", "framework"]);
+
+/**
+ * Read and validate a boot artifact.
+ *
+ * The validation is not ceremony. A boot dump is a build artifact that
+ * outlives the adapter that wrote it, and an older one silently missing a
+ * field surfaces hundreds of lines later as a SQL bind error naming a
+ * parameter number. Naming the route and the position instead turns a
+ * five-minute hunt into a one-line fix: re-run `boot dump`.
+ */
 export function readBootDump(path: string): BootDump {
   const dump = JSON.parse(readFileSync(path, "utf8")) as BootDump;
   if (dump.schema !== "codeintel.boot.fastify/1") {
     throw new Error(`${path}: unexpected boot dump schema "${dump.schema}"`);
+  }
+  for (const route of dump.routes ?? []) {
+    for (const entry of route.chain ?? []) {
+      if (!CHAIN_ORIGINS.has(entry.origin)) {
+        throw new Error(
+          `${path}: ${route.method} ${route.url} chain[${entry.position}] has ` +
+          `origin ${JSON.stringify(entry.origin)}; expected one of ` +
+          `${[...CHAIN_ORIGINS].join(" | ")}. The artifact predates the current ` +
+          `adapter — re-run: boot dump --repo <name>`,
+        );
+      }
+    }
   }
   return dump;
 }

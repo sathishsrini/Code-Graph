@@ -24,6 +24,8 @@ import { readFastapiDump, toBootDump } from "./boot/fastapi.ts";
 import { buildFlow, renderFlow } from "./query/flow.ts";
 import { runScipTypescript, documentAllowed } from "./static/scip/runner.ts";
 import { scanRepo, renderScan } from "./static/treesitter/report.ts";
+import { indexRepo, type IndexReport } from "./index/pipeline.ts";
+import { renderIndexReport } from "./index/report.ts";
 
 const DEFAULT_DB = ".codeintel/graph.db";
 const DEFAULT_CONFIG = "config/repos.json";
@@ -42,6 +44,7 @@ COMMANDS
   boot dump           Boot a service and read its routes + hook chains (P0-T8)
   flow                Ordered chain + call tree for one endpoint (P0-T9)
   scan                tree-sitter pass: throws, http, datastores, config (P1-T6)
+  index               Index every repo into the fact store, incrementally (P1-T11)
   help                Show this message
 
 OPTIONS
@@ -54,6 +57,7 @@ OPTIONS
   --depth <n>         flow: call tree depth cap    (default: 12)
   --out <path>        boot dump: where to write the JSON artifact
   --sample <n>        scip dump: symbols to print   (default: 20)
+  --force             index: re-run every derivation, ignoring the changed set
   --reset             db bootstrap: delete an existing database first
   --skip-path-check   config check: don't verify rootPath exists on disk
   --json              Machine-readable output
@@ -74,6 +78,7 @@ interface Options {
   out: string;
   sample: number;
   reset: boolean;
+  force: boolean;
   checkPaths: boolean;
   json: boolean;
 }
@@ -95,6 +100,7 @@ async function main(argv: string[]): Promise<number> {
         out: { type: "string" },
         sample: { type: "string" },
         reset: { type: "boolean", default: false },
+        force: { type: "boolean", default: false },
         // node:util parseArgs has no "--no-x" negation, so this is stated
         // positively. The default remains "do check paths".
         "skip-path-check": { type: "boolean", default: false },
@@ -119,6 +125,7 @@ async function main(argv: string[]): Promise<number> {
     out: values.out ?? "",
     sample: values.sample ? Number(values.sample) : 20,
     reset: values.reset === true,
+    force: values.force === true,
     checkPaths: values["skip-path-check"] !== true,
     json: values.json === true,
   };
@@ -164,6 +171,9 @@ async function main(argv: string[]): Promise<number> {
 
     case "scan":
       return await cmdScan(options);
+
+    case "index":
+      return await cmdIndex(options);
 
     case "derive":
       if (sub !== "calls") {
@@ -480,6 +490,64 @@ async function cmdScan(options: Options): Promise<number> {
     options.json ? `${JSON.stringify(result, null, 2)}\n` : renderScan(result),
   );
   return 0;
+}
+
+/**
+ * Index every configured repo, or one with `--repo` (P1-T11).
+ *
+ * Incremental by content hash. Re-running with nothing changed does no work
+ * and says so; `--force` re-runs every derivation. Artifacts (`.scip`, boot
+ * JSON) are produced by `scip index` and `boot dump` and are read, not built,
+ * here — indexing a service must not require booting it.
+ */
+async function cmdIndex(options: Options): Promise<number> {
+  let config;
+  try {
+    config = loadConfig(options.config, { checkPaths: options.checkPaths });
+  } catch (e) {
+    if (e instanceof ConfigError) {
+      process.stderr.write(`config error: ${e.message}\n`);
+      return 1;
+    }
+    throw e;
+  }
+
+  const repos = options.repo
+    ? config.repos.filter((r) => r.name === options.repo)
+    : config.repos;
+  if (repos.length === 0) {
+    process.stderr.write(`no repo named "${options.repo}" in ${options.config}\n`);
+    return 1;
+  }
+
+  const store = new FactStore(options.db);
+  try {
+    const reports: IndexReport[] = [];
+    for (const repo of repos) {
+      reports.push(await indexRepo({
+        store, repo,
+        artifactDir: resolve(".codeintel"),
+        force: options.force,
+      }));
+    }
+
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(reports, null, 2)}\n`);
+      return 0;
+    }
+
+    process.stdout.write(`database: ${store.path}\n\n`);
+    process.stdout.write(renderIndexReport(reports));
+
+    const integrity = store.verifyIntegrity();
+    process.stdout.write(
+      `foreign key: ${integrity.foreignKeyViolations === 0 ? "valid" : "VIOLATIONS"}\n` +
+      `integrity  : ${integrity.integrityCheck}\n`,
+    );
+    return integrity.ok ? 0 : 1;
+  } finally {
+    store.close();
+  }
 }
 
 function cmdBootDump(options: Options): number {

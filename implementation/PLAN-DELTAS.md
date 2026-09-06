@@ -307,3 +307,46 @@ Both boot adapters emit `"generatedAt": ""`. A timestamp defeats Phase 0
 acceptance criterion 3 — two runs producing byte-identical output — for no
 gain: the run that produced an artifact is already recorded in `runs`, with a
 real timestamp, in the database.
+
+---
+
+## D17 — the generated tsconfig indexed nothing on the one repo with directory includes · applied · P1-T11
+
+**Found while running the full pipeline**, not by a test.
+
+`buildTsconfig` copied `repos.json`'s globs verbatim. `60-kri-next` declares
+`include: ["app/**", "components/**", "lib/**", "types/**"]`, and TypeScript
+rejects a specification ending in `**`:
+
+```
+error TS5010: File specification cannot end in a recursive directory wildcard ('**'): 'app/**'.
+error: no files got indexed.
+```
+
+**This is [D6](#d6) from the other direction.** There, the file set was
+declared and the tool indexed a *wider* one. Here it was declared and the tool
+indexed *nothing* — and the `.scip` on disk was a stale artifact from an
+earlier `--infer-tsconfig` run, so every downstream number looked plausible.
+The three single-file repos never exposed it because `server.js` needs no
+rewriting.
+
+**Change:** `tsGlob` appends `/*` to a trailing `/**`. Two tests, one for the
+rewrite and one asserting globs `tsc` already accepts are left alone.
+
+---
+
+## D18 — a stale boot artifact failed as a SQL bind error · applied · P1-T11
+
+`41-kri-engine`'s checked-in boot artifact predated the adapter revision that
+added `origin`, and the first full `index` run died with:
+
+```
+TypeError: Provided value cannot be bound to SQLite parameter 8.
+```
+
+Nothing in that names the artifact, the route or the field. `readBootDump` now
+validates `origin` on every chain entry and reports the route, the position,
+the value it found and the fix (*re-run `boot dump`*).
+
+A boot dump is a build artifact that outlives the adapter that wrote it, so
+this will happen again; the point is that it costs one line to diagnose.

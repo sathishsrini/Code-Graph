@@ -442,6 +442,23 @@ export class FactStore {
     return Number(r.changes);
   }
 
+  /**
+   * Chain rows a file's evidence produced (R28).
+   *
+   * Scoped by `evidence_kind` for the same reason `deleteChain` is: an
+   * inline-auth row inferred from a handler body and a boot row reported by
+   * the framework are different claims about the same route, and re-indexing
+   * one channel must not silently erase the other's finding.
+   */
+  deleteChainByProvenance(fileId: number, evidenceKinds: EvidenceKind[]): number {
+    if (evidenceKinds.length === 0) return 0;
+    const q = evidenceKinds.map(() => "?").join(", ");
+    const r = this.db.prepare(
+      `DELETE FROM route_chain WHERE file_id = ? AND evidence_kind IN (${q})`,
+    ).run(fileId, ...evidenceKinds);
+    return Number(r.changes);
+  }
+
   // -- introspection --------------------------------------------------------
 
   countRows(table: string): number {

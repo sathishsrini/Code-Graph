@@ -103,7 +103,27 @@ describe("buildTsconfig", () => {
     const c = buildTsconfig(repo({ include: ["server.js"], exclude: ["src/**"] })) as
       { include: string[]; exclude: string[] };
     assert.deepEqual(c.include, ["server.js"]);
-    assert.deepEqual(c.exclude, ["src/**"]);
+    assert.deepEqual(c.exclude, ["src/**/*"]);
+  });
+
+  test("a trailing /** is rewritten, because tsc rejects it outright", () => {
+    // error TS5010: File specification cannot end in a recursive directory
+    // wildcard ('**'). And on a rejected include list tsc indexes NOTHING —
+    // which is the OPEN-1 failure from the other direction: the file set is
+    // declared and the tool silently uses a different one. `60-kri-next` is
+    // the only repo whose includes are directories, so this only ever
+    // appeared there.
+    const c = buildTsconfig(repo({ include: ["app/**", "lib/**"], exclude: [".next/**"] })) as
+      { include: string[]; exclude: string[] };
+    assert.deepEqual(c.include, ["app/**/*", "lib/**/*"]);
+    assert.deepEqual(c.exclude, [".next/**/*"]);
+  });
+
+  test("globs tsc already accepts are left alone", () => {
+    const c = buildTsconfig(repo({ include: ["src/**/*.ts", "server.js"], exclude: ["*.log"] })) as
+      { include: string[]; exclude: string[] };
+    assert.deepEqual(c.include, ["src/**/*.ts", "server.js"]);
+    assert.deepEqual(c.exclude, ["*.log"]);
   });
 
   test("an empty include widens to everything rather than indexing nothing", () => {

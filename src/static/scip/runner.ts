@@ -78,9 +78,28 @@ export function buildTsconfig(repo: RepoConfig): object {
       // and leaves the rest unresolved; it must not stop at the first error.
       skipLibCheck: true,
     },
-    include: repo.include.length > 0 ? repo.include : ["**/*"],
-    exclude: repo.exclude.length > 0 ? repo.exclude : ["node_modules"],
+    include: repo.include.length > 0 ? repo.include.map(tsGlob) : ["**/*"],
+    exclude: repo.exclude.length > 0 ? repo.exclude.map(tsGlob) : ["node_modules"],
   };
+}
+
+/**
+ * Translate a `repos.json` glob into one TypeScript accepts.
+ *
+ * `tsc` rejects a specification that ends in `**` outright:
+ *
+ *   error TS5010: File specification cannot end in a recursive directory
+ *   wildcard ('**'): 'app/**'.
+ *
+ * and on a *rejected include list* it indexes nothing at all — which surfaced
+ * as `no files got indexed` on `60-kri-next`, the only repo whose includes are
+ * directories rather than a single file. Appending `/*` gives the same meaning
+ * in TypeScript's own glob dialect. Left alone, this is the OPEN-1 failure
+ * again from the other direction: the file set is declared, and the tool
+ * silently indexes a different one — here, none.
+ */
+export function tsGlob(pattern: string): string {
+  return pattern.endsWith("/**") ? `${pattern}/*` : pattern === "**" ? "**/*" : pattern;
 }
 
 /**
