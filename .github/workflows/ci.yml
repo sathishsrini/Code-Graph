@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: typecheck · test · token audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # impact analysis needs history (P2-T11)
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # Token discipline. Non-blocking for now: the audit reports on context cost,
+      # it is not a correctness gate. Flip continue-on-error to false once a
+      # baseline budget is agreed.
+      - name: Token audit
+        id: token_audit
+        continue-on-error: true
+        run: |
+          npx --yes claude-token-optimizer audit --json | tee token-audit.json
+          echo "--- summary ---"
+          node -e "
+            const fs = require('node:fs');
+            try {
+              const r = JSON.parse(fs.readFileSync('token-audit.json', 'utf8'));
+              console.log(JSON.stringify(r, null, 2).slice(0, 4000));
+            } catch (e) {
+              console.log('audit produced no parseable JSON:', e.message);
+            }
+          "
+
+      - name: Upload token audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: token-audit
+          path: token-audit.json
+          if-no-files-found: ignore
+          retention-days: 30
