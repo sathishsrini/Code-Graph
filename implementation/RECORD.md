@@ -62,7 +62,7 @@ as unnamed locals.
 
 | Task | Commit | State |
 |---|---|---|
-| P1-T1 full schema + migrations | `PENDING` | **done** |
+| P1-T1 full schema + migrations | `887cfcc` | **done** |
 | P1-T2 normalizer | — | not started |
 | P1-T3 scip-python | — | not started |
 | P1-T4 FastAPI boot adapter | — | not started |
