@@ -256,3 +256,54 @@ which is OPEN-4's requirement and doc §Q.1's *"#1 source of wrong cross-service
 edges"* — and neither becomes an edge until P1-T7 resolves a destination.
 `ingest.ts` deliberately writes no `CALLS_EXTERNAL` row for an HTTP site, so the
 same call cannot be counted twice.
+
+---
+
+## D14 — Starlette middleware order is the reverse of source order · measured · P1-T4
+
+**Measured on `51-integration`.** Source declares `CORSMiddleware` at line 28
+and `@app.middleware("http") correlation_middleware` at line 67. Reflection
+reports **correlation_middleware first**.
+
+That is correct, and it is the Python analogue of [D5](#d5). Starlette's
+`add_middleware` **inserts at index 0**, and `build_middleware_stack` wraps
+`reversed(user_middleware)` — so `user_middleware[0]` is wrapped last, ends up
+outermost, and runs first. List order *is* execution order while being the
+reverse of the order the source declares.
+
+Reading the source top-to-bottom gives the wrong answer, silently, and inverts
+the answer to *"what runs first"* — the exact class of defect D5 was.
+
+The adapter reports list order and `boot/fastapi.ts` documents why.
+
+---
+
+## D15 — one downstream shape, two frameworks, without flattening them · applied · P1-T4
+
+Fastify hooks are **per route** and inheritable through plugin scopes.
+Starlette middleware is **app-wide**: it wraps the router, so every route in
+the app carries the same prefix.
+
+`src/boot/fastapi.ts` narrows the FastAPI artifact onto the same `BootDump`, so
+P1-T8's ingester, R40's queries and P2-T4's rendering contain no branch on
+framework. Where the frameworks genuinely differ the difference is *moved*, not
+lost:
+
+| FastAPI concept | Shared field | Why |
+|---|---|---|
+| `middleware`, `dependency` | `phase: "preHandler"` | "when does it run relative to the handler" is the question every query asks |
+| app-wide middleware | `inheritedFrom: <service>` | null would read as *"declared on this route"*, which is false |
+| Starlette's own classes | `origin: "framework"` | no SCIP index of this repo contains them, so the join is not expected to succeed |
+| `Depends` nesting depth | `depth` on the artifact entry | a flat list loses that `get_db` runs inside `get_current_user` |
+
+Collapsing middleware and hooks into one word would have been convenient and
+would have made an inherited-hook query silently wrong on every Python service.
+
+---
+
+## D16 — `generatedAt` is empty on purpose · applied · P1-T4
+
+Both boot adapters emit `"generatedAt": ""`. A timestamp defeats Phase 0
+acceptance criterion 3 — two runs producing byte-identical output — for no
+gain: the run that produced an artifact is already recorded in `runs`, with a
+real timestamp, in the database.

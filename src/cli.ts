@@ -20,6 +20,7 @@ import {
 import { displayNameOf } from "./static/scip/symbol.ts";
 import { deriveCalls, dedupe, createFsSourceProvider } from "./derive/calls.ts";
 import { readBootDump, findRoute } from "./boot/dump.ts";
+import { readFastapiDump, toBootDump } from "./boot/fastapi.ts";
 import { buildFlow, renderFlow } from "./query/flow.ts";
 import { runScipTypescript, documentAllowed } from "./static/scip/runner.ts";
 import { scanRepo, renderScan } from "./static/treesitter/report.ts";
@@ -501,12 +502,13 @@ function cmdBootDump(options: Options): number {
     process.stderr.write(`no repo named "${options.repo}" in ${options.config}\n`);
     return 1;
   }
-  if (repo.framework !== "fastify") {
-    // FastAPI is P1-T4. Say which adapter is missing rather than emitting an
-    // empty dump that reads as "this service has no routes".
+  if (repo.framework !== "fastify" && repo.framework !== "fastapi") {
+    // Next.js route extraction is descoped by decision (plan P1-T5), so there
+    // is deliberately no adapter. Say which one is missing rather than
+    // emitting an empty dump, which reads as "this service has no routes".
     process.stderr.write(
       `boot dump: no adapter for framework "${repo.framework}" (repo ${repo.name}). ` +
-      `Fastify only in Phase 0.\n`,
+      `Fastify and FastAPI only.\n`,
     );
     return 2;
   }
@@ -516,8 +518,19 @@ function cmdBootDump(options: Options): number {
   }
 
   const out = options.out || join(".codeintel", "boot", `${repo.name}.json`);
-  const adapter = resolve(import.meta.dirname, "../adapters/fastify/boot-dump.cjs");
-  const result = spawnSync(process.execPath, [
+  const python = repo.framework === "fastapi";
+
+  // Both adapters run as a CHILD PROCESS on purpose: they import and boot a
+  // foreign application, which can throw, hang, open handles or call exit,
+  // and none of that should be able to take the CLI with it.
+  const adapter = resolve(
+    import.meta.dirname,
+    python ? "../adapters/fastapi/boot_dump.py" : "../adapters/fastify/boot-dump.cjs",
+  );
+  // OPEN-5: the indexing/boot interpreter is declared, not discovered. It does
+  // not have to match the one the service runs in production.
+  const runner = python ? (repo.pythonBin || "python") : process.execPath;
+  const result = spawnSync(runner, [
     adapter,
     "--entry", join(repo.rootPath, repo.entrypoint),
     "--cwd", repo.rootPath,
@@ -534,7 +547,13 @@ function cmdBootDump(options: Options): number {
     return result.status ?? 1;
   }
 
-  const dump = readBootDump(resolve(out));
+  // One shape downstream. The frameworks differ — Fastify hooks are per-route
+  // and inheritable, Starlette middleware is app-wide — and `src/boot/fastapi.ts`
+  // preserves that difference in `origin` and `inheritedFrom` rather than
+  // flattening it into "hooks".
+  const dump = python
+    ? toBootDump(readFastapiDump(resolve(out)))
+    : readBootDump(resolve(out));
   if (options.json) {
     process.stdout.write(JSON.stringify(dump, null, 2) + "\n");
     return 0;
@@ -545,7 +564,7 @@ function cmdBootDump(options: Options): number {
 ` +
     `entrypoint : ${dump.entrypoint}
 ` +
-    `fastify    : ${dump.tool.fastify}
+    `framework  : ${dump.tool.fastify ? `fastify ${dump.tool.fastify}` : dump.tool.adapter}
 ` +
     `artifact   : ${resolve(out)}
 
@@ -570,7 +589,7 @@ function cmdBootDump(options: Options): number {
     for (const c of route.chain) {
       const label = c.name ?? "(anonymous)";
       const from = c.inheritedFrom ? `  inherited from ${c.inheritedFrom}` : "";
-      const fw = c.origin === "framework" ? "  [fastify]" : "";
+      const fw = c.origin === "framework" ? "  [framework]" : "";
       process.stdout.write(
         `  ${String(c.position).padStart(2)}. ${c.phase.padEnd(11)}` +
         `${label.padEnd(24)}${c.key}${fw}${from}\n`,

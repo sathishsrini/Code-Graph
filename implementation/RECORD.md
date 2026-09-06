@@ -65,9 +65,9 @@ as unnamed locals.
 | P1-T1 full schema + migrations | `887cfcc` | **done** |
 | P1-T2 normalizer | — | not started |
 | P1-T3 scip-python | — | not started |
-| P1-T4 FastAPI boot adapter | — | not started |
+| P1-T4 FastAPI boot adapter | `PENDING4` | **done** |
 | P1-T5 Next.js static indexing | — | not started |
-| P1-T6 tree-sitter pass | `PENDING6` | **done** |
+| P1-T6 tree-sitter pass | `99cf028` | **done** |
 | P1-T7 cross-service linker | — | not started |
 | P1-T8 route chain expander | — | not started |
 | P1-T9 Semgrep check_kind pack | — | not started |
@@ -169,3 +169,31 @@ writer is present, the owning migration is not). Attribution falls back to the
 *file* node when SCIP has no definition covering the line, never to the nearest
 symbol — a `WRITES` edge on a guessed function would be read as fact by R40's
 anomaly query.
+
+## P1-T4 — FastAPI boot adapter
+
+**Shipped.** `adapters/fastapi/boot_dump.py` (~290 LOC — the plan estimated
+~80; the extra is location resolution, the dependency recursion and the
+warnings channel) and `src/boot/fastapi.ts`, which narrows the artifact onto
+the same `BootDump` the Fastify channel produces. `boot dump` now dispatches on
+`repos.json`'s `framework` and runs the declared `pythonBin`.
+
+**Verified on `51-integration`:** 3 routes, 9 chain entries, **0 anonymous, 0
+unlocated**, 4 non-API routes counted and skipped. Every chain entry resolves
+to `file:line`. The dependency-recursion half of R22 is verified against
+`tests/fixtures/fastapi-dump.json`, because the corpus has zero `Depends` —
+so without a fixture that code would have shipped unexercised.
+
+**Deviations.** [D14](PLAN-DELTAS.md) Starlette middleware order is the reverse
+of source order · [D15](PLAN-DELTAS.md) one downstream shape without flattening
+the frameworks · [D16](PLAN-DELTAS.md) `generatedAt` is empty for determinism.
+
+**Does not do.** No `include_router(prefix=...)` case in the corpus, so prefix
+composition is taken from `route.path` (which FastAPI has already composed) and
+never re-derived — correct, but untested against a nested router. OPEN-6 holds:
+`app.openapi()` produces no component schemas because the handler takes a raw
+`Request`, so `routes.request_schema` stays null and the artifact says so in
+`warnings` rather than leaving an unexplained column of nulls. Security
+dependencies are reported and are **zero on this corpus** — `51-integration`
+compares a bearer token inside the handler, so it is authenticated and reports
+no security dependency, exactly as `POST /api/v1/po` does on the router.
