@@ -1,0 +1,63 @@
+{
+  "//": "Validation corpus. These are TEST FIXTURES, not the live syf-* services.",
+  "//exclude": "The src/** excludes implement OPEN-1: in 40-kri-router and 41-kri-engine the src/ TypeScript is non-compiling scaffolding that never runs. Only server.js executes. Indexing src/ would produce a confident, fictional architecture.",
+
+  "repos": [
+    {
+      "name": "40-kri-router",
+      "rootPath": "D:/###facilitator/dev-workspace/40-kri-router",
+      "serviceName": "40-kri-router",
+      "lang": "js",
+      "framework": "fastify",
+      "entrypoint": "server.js",
+      "include": ["server.js"],
+      "exclude": ["src/**", "node_modules/**", "*.log", ".env*"],
+      "baseUrlEnvVars": ["ENGINE_BASE_URL", "PROCUREMENT_BASE_URL", "INTEGRATION_BASE_URL"],
+      "port": 3001,
+      "tsconfig": null,
+      "pythonBin": null
+    },
+    {
+      "name": "41-kri-engine",
+      "rootPath": "D:/###facilitator/dev-workspace/41-kri-engine",
+      "serviceName": "41-kri-engine",
+      "lang": "js",
+      "framework": "fastify",
+      "entrypoint": "server.js",
+      "include": ["server.js", "migrations/**"],
+      "exclude": ["src/**", "node_modules/**", "start.js", "test-bcrypt.js", "*.log", ".env*"],
+      "baseUrlEnvVars": [],
+      "port": 3002,
+      "tsconfig": null,
+      "pythonBin": null
+    },
+    {
+      "name": "51-integration",
+      "rootPath": "D:/###facilitator/dev-workspace/51-integration",
+      "serviceName": "51-integration",
+      "lang": "py",
+      "framework": "fastapi",
+      "entrypoint": "main.py",
+      "include": ["main.py"],
+      "exclude": ["app.py", "app/**", "__pycache__/**", "*.log", ".env*"],
+      "baseUrlEnvVars": [],
+      "port": 8000,
+      "tsconfig": null,
+      "pythonBin": null
+    },
+    {
+      "name": "60-kri-next",
+      "rootPath": "D:/###facilitator/dev-workspace/60-kri-next",
+      "serviceName": "60-kri-next",
+      "lang": "ts",
+      "framework": "nextjs",
+      "entrypoint": "",
+      "include": ["app/**", "components/**", "lib/**", "types/**"],
+      "exclude": [".next/**", "node_modules/**", "*.log", ".env*", "next-env.d.ts"],
+      "baseUrlEnvVars": ["NEXT_PUBLIC_API_BASE_URL"],
+      "port": 3000,
+      "tsconfig": "tsconfig.json",
+      "pythonBin": null
+    }
+  ]
+}

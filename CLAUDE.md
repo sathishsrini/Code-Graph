@@ -76,6 +76,48 @@ Full command set and engine workflow: `.claude/QUICK_START.md`
 
 ---
 
+## Testing & Validation Policy 🔬
+
+**Delegate routine test execution to the local OpenCode free model. Do not spend
+Claude tokens running or reading test output that a local model can summarise.**
+
+```
+Claude
+  ↓  asks local OpenCode to run tests
+Local OpenCode  →  npm test / pytest / tsc --noEmit
+  ↓  returns a CONCISE result
+Claude  →  analyses only the failures, only if needed
+```
+
+**Delegate to OpenCode:**
+
+```bash
+opencode run "Run: npm test && npm run typecheck in C:/Users/sathish/Projects.
+Reply with ONLY: total/passed/failed counts, and for each failure the test name
+plus the assertion or error message. No stack traces. No passing-test names."
+```
+
+`opencode` is installed at `C:/ProgramData/chocolatey/bin/opencode`.
+`opencode run <message>` is the non-interactive form.
+
+**Rules:**
+
+| Do | Don't |
+|---|---|
+| Ask OpenCode to run the suite and report counts + failure messages | Pipe full test logs into Claude |
+| Bring Claude in for **debugging, root cause, design decisions** | Use Claude as a test runner |
+| Escalate to Claude when the local model cannot resolve it | Ask Claude to re-read passing output |
+| Keep every failing test failing until genuinely fixed | **Skip, `.only`, or suppress a test to save tokens** |
+
+**Never suppress a failing test to reduce token usage.** A red test is
+information; hiding it converts a known problem into an unknown one — the same
+failure mode as dropping `unresolved_calls` from the graph.
+
+Claude is for: root-cause analysis, implementation decisions, schema and API
+design, and anything the local model gets wrong or cannot resolve.
+
+---
+
 ## Working rules for this repo
 
 1. **No table or column without an extractor that fills it this week.** This is the
