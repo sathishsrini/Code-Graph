@@ -159,4 +159,119 @@ shell regardless), so filtering wins on both cost and trust.
 
 ---
 
+## M6 — What Fastify boot reflection actually reports
+
+**Task**: P0-T8 · **Date**: 2026-09-06 · **Corpus**: `40-kri-router`, `41-kri-engine`,
+plus `tests/fixtures/fastify-app.cjs` (which adds the plugin nesting the corpus lacks)
+
+```bash
+node src/cli.ts boot dump --repo 40-kri-router
+```
+
+| | 40-kri-router | 41-kri-engine | fixture |
+|---|---|---|---|
+| routes reported | 23 | 21 | 5 |
+| routes declared in source | 17 | 15 | 3 |
+| chain entries | 77 | 71 | 20 |
+| anonymous chain entries | 52 (68%) | 63 (89%) | 7 |
+| **unlocated chain entries** | **0** | **0** | **0** |
+
+### Boot reflection reports routes that exist in no source file
+
+Every service reports more routes than its source declares: Fastify synthesises a
+HEAD route per GET (`exposeHeadRoute`, on by default) and gives it an extra
+`onSend` hook from `fastify/lib/headRoute.js`. Six such routes in the router, six
+in the engine. No static reader of the source would find them. This is the
+clearest evidence for the doc's central correction — routes and middleware order
+are a runtime-reflection problem.
+
+### `routeOptions` does not carry the inherited chain
+
+The first implementation read hook arrays from the `routeOptions` argument of an
+`onRoute` hook. That is Fastify's documented per-route payload, and it carries
+**only route-level hooks**:
+
+| Chain source | Entries, 40-kri-router | Per route |
+|---|---|---|
+| `routeOptions` lifecycle arrays | 31 | 1.3 — effectively handler-only |
+| **owning instance's merged hooks** | **77** | **3.3** |
+
+A handler-only chain is not an error. It renders as *"this route has no
+middleware"*, so both global hooks — the correlation-id middleware and the
+response logger — silently vanished from all 23 routes. On a security query
+(R40) the same defect reports every route as unauthenticated.
+
+### …and the merged set is not readable when `onRoute` fires
+
+The obvious fix — read `instance[kHooks]` inside `onRoute` — is also wrong, and
+wrong intermittently, which is worse:
+
+```
+onRoute GET  /health   instanceHooks={}                      <- root route: empty
+onRoute GET  /c/child  instanceHooks={onRequest,onResponse}  <- plugin route: full
+```
+
+`addHook` on the root instance is deferred through avvio, so at `onRoute` time
+the root's hook set is still empty; a child plugin's set is already populated
+because it was cloned later. Root routes lose their hooks, plugin routes keep
+theirs. **The owning instance is captured during `onRoute` and read after
+`ready()`**, which is the only point at which it is final.
+
+### `fastify-overview` is opt-in, not the default
+
+R21 names `fastify-overview` as the boot source. It is `--overview` here, off by
+default, for three measured reasons:
+
+| Observed | Consequence |
+|---|---|
+| Saw **0 of 23** routes on `40-kri-router`, 2 of 5 on the fixture | Its instrumentation installs when its own plugin body runs — during `ready()` — and a service that registers at module scope has already finished. A *partial* tree is worse than none: it looks credible. |
+| **Threw during boot** with `addSource: true` when a plugin is registered at module scope (`index.js:90`, `.find(...)` returns undefined) | Takes the whole dump with it |
+| Stamps `Math.random()` tracking ids into its tree | Two runs differ, breaking Phase 0 acceptance criterion 3 (byte-identical re-runs) |
+
+Nothing in the chain depends on it — hooks come from Fastify directly — so the
+default path loses no information. When `--overview` is passed and it
+under-reports, the dump says so in `warnings` rather than presenting the tree as
+the route set.
+
+### Anonymous hooks: located, not renamed
+
+The plan's P0-T8 said to *"convert the 4 anonymous arrow hooks to named functions
+in the fixture (~10 lines) so output is labelled."* Measured, the fixtures have
+**52 and 63** anonymous chain entries, not 4 — and renaming them would label the
+fixture while leaving the engine unable to read any real repo, where
+`addHook('onRequest', async (req, reply) => …)` is the dominant idiom.
+
+Instead the V8 inspector's `[[FunctionLocation]]` yields `file:line:col` for any
+function object, named or not. Every reported position was verified to land on
+the function it names:
+
+```
+server.js:36:29 -> "async (req, reply) => {"      onRequest, correlation id
+server.js:46:30 -> "async (req, reply) => {"      onResponse, request logger
+server.js:168:28 -> "(req, reply) {"              proxyToEngine
+```
+
+`unlocatedChainEntries` is 0 across all three services. The position is also the
+join key to SCIP: a hook at `server.js:36` falls inside exactly one definition's
+`enclosingRange`. (For a *named* function expression V8 reports the column of the
+parameter list, so the name precedes the reported column.)
+
+### The chain is correct and still not the whole security story
+
+`POST /api/v1/po` reflects as:
+
+```
+0. onRequest   (anonymous)     server.js:36:29
+1. handler     proxyToEngine   server.js:168:28
+2. onResponse  (anonymous)     server.js:46:30
+```
+
+That matches the source exactly — and contains **no auth check**, because there
+is no auth *hook*. `proxyToEngine` calls `checkUserAuth(req, reply)` as its first
+statement. Boot reflection is complete and correct here and still cannot see it;
+only R26's inline detector (P1-T10) can. Read this dump as *"no auth hook"*,
+never as *"no auth"*.
+
+---
+
 **Last Updated**: 2026-09-06

@@ -6,8 +6,9 @@
 // ============================================================================
 
 import { parseArgs } from "node:util";
-import { resolve } from "node:path";
-import { loadConfig, ConfigError } from "./config/repos.ts";
+import { resolve, join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { loadConfig, repoByName, ConfigError } from "./config/repos.ts";
 import { FactStore } from "./store/db.ts";
 import {
   ScipProtobufReader, summarize, roleNames, syntaxKindLabel,
@@ -15,6 +16,7 @@ import {
 } from "./static/scip/reader.ts";
 import { displayNameOf } from "./static/scip/symbol.ts";
 import { deriveCalls, dedupe } from "./derive/calls.ts";
+import { readBootDump } from "./boot/dump.ts";
 
 const DEFAULT_DB = ".codeintel/graph.db";
 const DEFAULT_CONFIG = "config/repos.json";
@@ -29,12 +31,15 @@ COMMANDS
   config check        Validate config/repos.json and print the resolved repos
   scip dump           Summarise a .scip index and sample its symbols
   derive calls        Derive CALLS edges from a .scip index (P0-T6)
+  boot dump           Boot a service and read its routes + hook chains (P0-T8)
   help                Show this message
 
 OPTIONS
   --db <path>         Database path            (default: ${DEFAULT_DB})
   --config <path>     Config path              (default: ${DEFAULT_CONFIG})
   --index <path>      scip dump: path to a .scip file
+  --repo <name>       boot dump: repo from config/repos.json
+  --out <path>        boot dump: where to write the JSON artifact
   --sample <n>        scip dump: symbols to print   (default: 20)
   --reset             db bootstrap: delete an existing database first
   --skip-path-check   config check: don't verify rootPath exists on disk
@@ -48,6 +53,8 @@ interface Options {
   db: string;
   config: string;
   index: string;
+  repo: string;
+  out: string;
   sample: number;
   reset: boolean;
   checkPaths: boolean;
@@ -64,6 +71,8 @@ function main(argv: string[]): number {
         db: { type: "string" },
         config: { type: "string" },
         index: { type: "string" },
+        repo: { type: "string" },
+        out: { type: "string" },
         sample: { type: "string" },
         reset: { type: "boolean", default: false },
         // node:util parseArgs has no "--no-x" negation, so this is stated
@@ -83,6 +92,8 @@ function main(argv: string[]): number {
     db: values.db ?? DEFAULT_DB,
     config: values.config ?? DEFAULT_CONFIG,
     index: values.index ?? "",
+    repo: values.repo ?? "",
+    out: values.out ?? "",
     sample: values.sample ? Number(values.sample) : 20,
     reset: values.reset === true,
     checkPaths: values["skip-path-check"] !== true,
@@ -118,6 +129,15 @@ function main(argv: string[]): number {
         return 2;
       }
       return cmdScipDump(options);
+
+    case "boot":
+      if (sub !== "dump") {
+        process.stderr.write(`unknown subcommand: boot ${sub}
+
+${USAGE}`);
+        return 2;
+      }
+      return cmdBootDump(options);
 
     case "derive":
       if (sub !== "calls") {
@@ -259,6 +279,114 @@ function cmdScipDump(options: Options): number {
       shown += 1;
       if (shown >= options.sample) break outer;
     }
+  }
+
+  return 0;
+}
+
+/**
+ * Boot a service and read back its routes and ordered hook chains (P0-T8).
+ *
+ * The adapter runs as a CHILD PROCESS on purpose. It requires and boots a
+ * foreign application: that app can throw, hang, open handles or call
+ * process.exit, and none of that should be able to take the CLI with it.
+ */
+function cmdBootDump(options: Options): number {
+  if (!options.repo) {
+    process.stderr.write("boot dump requires --repo <name from config/repos.json>\n");
+    return 2;
+  }
+
+  let repo;
+  try {
+    repo = repoByName(loadConfig(options.config, { checkPaths: options.checkPaths }), options.repo);
+  } catch (e) {
+    if (e instanceof ConfigError) {
+      process.stderr.write(`config error: ${e.message}\n`);
+      return 1;
+    }
+    throw e;
+  }
+  if (!repo) {
+    process.stderr.write(`no repo named "${options.repo}" in ${options.config}\n`);
+    return 1;
+  }
+  if (repo.framework !== "fastify") {
+    // FastAPI is P1-T4. Say which adapter is missing rather than emitting an
+    // empty dump that reads as "this service has no routes".
+    process.stderr.write(
+      `boot dump: no adapter for framework "${repo.framework}" (repo ${repo.name}). ` +
+      `Fastify only in Phase 0.\n`,
+    );
+    return 2;
+  }
+  if (!repo.entrypoint) {
+    process.stderr.write(`boot dump: repo ${repo.name} declares no entrypoint\n`);
+    return 2;
+  }
+
+  const out = options.out || join(".codeintel", "boot", `${repo.name}.json`);
+  const adapter = resolve(import.meta.dirname, "../adapters/fastify/boot-dump.cjs");
+  const result = spawnSync(process.execPath, [
+    adapter,
+    "--entry", join(repo.rootPath, repo.entrypoint),
+    "--cwd", repo.rootPath,
+    "--service", repo.serviceName,
+    "--out", resolve(out),
+  ], { encoding: "utf8", timeout: 120_000 });
+
+  if (result.error) {
+    process.stderr.write(`boot dump: ${result.error.message}\n`);
+    return 1;
+  }
+  if (result.status !== 0) {
+    process.stderr.write(result.stderr || "boot dump: adapter failed\n");
+    return result.status ?? 1;
+  }
+
+  const dump = readBootDump(resolve(out));
+  if (options.json) {
+    process.stdout.write(JSON.stringify(dump, null, 2) + "\n");
+    return 0;
+  }
+
+  process.stdout.write(
+    `service    : ${dump.service}
+` +
+    `entrypoint : ${dump.entrypoint}
+` +
+    `fastify    : ${dump.tool.fastify}
+` +
+    `artifact   : ${resolve(out)}
+
+` +
+    `routes     : ${dump.stats.routes}
+` +
+    `chain rows : ${dump.stats.chainEntries}
+` +
+    `  anonymous: ${dump.stats.anonymousChainEntries} ` +
+    `(located by file:line, not by name)
+` +
+    `  unlocated: ${dump.stats.unlocatedChainEntries}` +
+    `${dump.stats.unlocatedChainEntries > 0 ? "   <-- GAP" : ""}
+\n`,
+  );
+
+  for (const w of dump.warnings) process.stdout.write(`warning: ${w}\n`);
+  if (dump.warnings.length) process.stdout.write("\n");
+
+  for (const route of dump.routes) {
+    process.stdout.write(`${route.method} ${route.url}\n`);
+    for (const c of route.chain) {
+      const label = c.name ?? "(anonymous)";
+      const from = c.inheritedFrom ? `  inherited from ${c.inheritedFrom}` : "";
+      const fw = c.origin === "framework" ? "  [fastify]" : "";
+      process.stdout.write(
+        `  ${String(c.position).padStart(2)}. ${c.phase.padEnd(11)}` +
+        `${label.padEnd(24)}${c.key}${fw}${from}\n`,
+      );
+    }
+    process.stdout.write("\n");
   }
 
   return 0;
