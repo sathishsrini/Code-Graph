@@ -1,0 +1,26 @@
+{
+  "name": "code-intel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Architecture-aware code intelligence and context engine: SCIP + boot reflection + SQLite fact store + query engine",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "bin": {
+    "codeintel": "./src/cli.ts"
+  },
+  "scripts": {
+    "cli": "node src/cli.ts",
+    "test": "node --test tests/",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "audit:tokens": "npx claude-token-optimizer audit --json",
+    "db:bootstrap": "node src/cli.ts db bootstrap",
+    "db:reset": "node src/cli.ts db bootstrap --reset"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
