@@ -13,6 +13,19 @@
 # CONFIGURE (optional):
 #   CTO_WRITE_ADVISORY_TOKENS — cumulative threshold for advisory (default: 5000)
 
+# ── Python resolution ────────────────────────────────────────────────────
+# On Windows "python3" is intercepted by a Microsoft Store app-execution alias
+# that SATISFIES `command -v` but fails on execution. So each candidate is
+# actually run before being accepted. CTO_PY is empty if none work, and every
+# caller below degrades gracefully in that case.
+CTO_PY=""
+for _cto_py in python3 python py; do
+  if command -v "$_cto_py" >/dev/null 2>&1 && "$_cto_py" -c "" >/dev/null 2>&1; then
+    CTO_PY="$_cto_py"
+    break
+  fi
+done
+
 LOG_FILE=".claude/sessions/write-log.md"
 ADVISORY_THRESHOLD="${CTO_WRITE_ADVISORY_TOKENS:-5000}"
 DATE=$(date +%Y-%m-%d)
@@ -26,7 +39,7 @@ fi
 
 # Get file path from stdin JSON (tool input is passed via stdin for PostToolUse)
 # Claude Code passes {"tool_name": "...", "tool_input": {"file_path": "..."}, ...}
-FILE_PATH=$(cat /dev/stdin 2>/dev/null | python3 -c "
+FILE_PATH=$(cat /dev/stdin 2>/dev/null | "$CTO_PY" -c "
 import sys, json
 try:
     data = json.load(sys.stdin)

@@ -15,13 +15,26 @@
 #   CTO_MAX_INJECT_FILES — max files to inject per prompt (default: 3)
 #   CTO_MAX_INJECT_WORDS — max total words to inject (default: 1500, ~2000 tokens)
 
+# ── Python resolution ────────────────────────────────────────────────────
+# On Windows "python3" is intercepted by a Microsoft Store app-execution alias
+# that SATISFIES `command -v` but fails on execution. So each candidate is
+# actually run before being accepted. CTO_PY is empty if none work, and every
+# caller below degrades gracefully in that case.
+CTO_PY=""
+for _cto_py in python3 python py; do
+  if command -v "$_cto_py" >/dev/null 2>&1 && "$_cto_py" -c "" >/dev/null 2>&1; then
+    CTO_PY="$_cto_py"
+    break
+  fi
+done
+
 LEARNINGS_DIR="${CTO_LEARNINGS_DIR:-docs/learnings}"
 MAX_FILES="${CTO_MAX_INJECT_FILES:-3}"
 MAX_WORDS="${CTO_MAX_INJECT_WORDS:-1500}"
 
 # Read stdin JSON to get the user prompt
 STDIN_JSON=$(cat)
-PROMPT=$(echo "$STDIN_JSON" | python3 -c "
+PROMPT=$(echo "$STDIN_JSON" | "$CTO_PY" -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -35,7 +48,7 @@ if [ -z "$PROMPT" ] || [ ! -d "$LEARNINGS_DIR" ]; then
 fi
 
 # Find matching topic files using Python for robust matching
-INJECTED=$(python3 - "$LEARNINGS_DIR" "$MAX_FILES" "$MAX_WORDS" "$PROMPT" <<'PYEOF'
+INJECTED=$("$CTO_PY" - "$LEARNINGS_DIR" "$MAX_FILES" "$MAX_WORDS" "$PROMPT" <<'PYEOF'
 import sys, os, re
 
 learnings_dir = sys.argv[1]

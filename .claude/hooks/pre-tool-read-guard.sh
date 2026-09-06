@@ -15,6 +15,19 @@
 #   CTO_READ_GUARD_DISABLE  — set to 1 to bypass all guards
 
 # Bypass switch
+# ── Python resolution ────────────────────────────────────────────────────
+# On Windows "python3" is intercepted by a Microsoft Store app-execution alias
+# that SATISFIES `command -v` but fails on execution. So each candidate is
+# actually run before being accepted. CTO_PY is empty if none work, and every
+# caller below degrades gracefully in that case.
+CTO_PY=""
+for _cto_py in python3 python py; do
+  if command -v "$_cto_py" >/dev/null 2>&1 && "$_cto_py" -c "" >/dev/null 2>&1; then
+    CTO_PY="$_cto_py"
+    break
+  fi
+done
+
 if [ "${CTO_READ_GUARD_DISABLE:-0}" = "1" ]; then
   exit 0
 fi
@@ -29,7 +42,7 @@ READ_MAX_BYTES="${CTO_READ_MAX_BYTES:-51200}"
 READ_WARN_BYTES="${CTO_READ_WARN_BYTES:-10240}"
 
 # Extract file_path from stdin JSON
-FILE_PATH=$(cat | python3 -c "
+FILE_PATH=$(cat | "$CTO_PY" -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -50,7 +63,7 @@ case "$BASENAME" in
   package-lock.json|yarn.lock|pnpm-lock.yaml|Cargo.lock|poetry.lock|Gemfile.lock|composer.lock)
     echo "🚫 Read blocked: '$FILE_PATH' is a lock file (~10,000–50,000 tokens)." >&2
     echo "   Lock files are auto-generated and wasteful to read directly." >&2
-    echo "   Use: cat package.json | python3 -m json.tool  for dependency info" >&2
+    echo "   Use: cat package.json | python -m json.tool  for dependency info" >&2
     echo "   Override: CTO_READ_GUARD_DISABLE=1" >&2
     exit 2
     ;;

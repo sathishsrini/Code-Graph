@@ -12,6 +12,19 @@
 #
 # DEPENDS ON: stop-session-snapshot.sh (must be installed for snapshot to exist)
 
+# ── Python resolution ────────────────────────────────────────────────────
+# On Windows "python3" is intercepted by a Microsoft Store app-execution alias
+# that SATISFIES `command -v` but fails on execution. So each candidate is
+# actually run before being accepted. CTO_PY is empty if none work, and every
+# caller below degrades gracefully in that case.
+CTO_PY=""
+for _cto_py in python3 python py; do
+  if command -v "$_cto_py" >/dev/null 2>&1 && "$_cto_py" -c "" >/dev/null 2>&1; then
+    CTO_PY="$_cto_py"
+    break
+  fi
+done
+
 SNAPSHOT=".claude/sessions/snapshot.md"
 MARKER=".claude/sessions/.snapshot-injected-$(date +%Y-%m-%d)"
 
@@ -30,8 +43,8 @@ fi
 
 # Check snapshot age
 SNAPSHOT_AGE_HOURS=0
-if command -v python3 >/dev/null 2>&1; then
-  SNAPSHOT_AGE_HOURS=$(python3 -c "
+if [ -n "$CTO_PY" ]; then
+  SNAPSHOT_AGE_HOURS=$("$CTO_PY" -c "
 import os, time
 mtime = os.path.getmtime('$SNAPSHOT')
 age_hours = (time.time() - mtime) / 3600

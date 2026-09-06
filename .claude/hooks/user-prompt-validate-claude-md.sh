@@ -14,6 +14,19 @@
 #   CTO_CLAUDE_MD_PATH       — path to CLAUDE.md (default: CLAUDE.md)
 #   CTO_TOKEN_WARN_THRESHOLD — token count warning threshold (default: 600)
 
+# ── Python resolution ────────────────────────────────────────────────────
+# On Windows "python3" is intercepted by a Microsoft Store app-execution alias
+# that SATISFIES `command -v` but fails on execution. So each candidate is
+# actually run before being accepted. CTO_PY is empty if none work, and every
+# caller below degrades gracefully in that case.
+CTO_PY=""
+for _cto_py in python3 python py; do
+  if command -v "$_cto_py" >/dev/null 2>&1 && "$_cto_py" -c "" >/dev/null 2>&1; then
+    CTO_PY="$_cto_py"
+    break
+  fi
+done
+
 MARKER=".claude/sessions/.claude-md-validated-$(date +%Y-%m-%d)"
 CLAUDE_MD="${CTO_CLAUDE_MD_PATH:-CLAUDE.md}"
 TOKEN_THRESHOLD="${CTO_TOKEN_WARN_THRESHOLD:-600}"
@@ -32,7 +45,7 @@ if [ ! -f "$CLAUDE_MD" ]; then
 fi
 
 # Run all checks via Python for clean logic
-ISSUES=$(python3 - "$CLAUDE_MD" "$TOKEN_THRESHOLD" <<'PYEOF'
+ISSUES=$("$CTO_PY" - "$CLAUDE_MD" "$TOKEN_THRESHOLD" <<'PYEOF'
 import sys, re
 
 claude_md = sys.argv[1]

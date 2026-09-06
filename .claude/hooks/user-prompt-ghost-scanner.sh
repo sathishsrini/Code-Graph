@@ -15,6 +15,19 @@
 #
 # Override: CTO_GHOST_SCAN_DISABLE=1
 
+# ── Python resolution ────────────────────────────────────────────────────
+# On Windows "python3" is intercepted by a Microsoft Store app-execution alias
+# that SATISFIES `command -v` but fails on execution. So each candidate is
+# actually run before being accepted. CTO_PY is empty if none work, and every
+# caller below degrades gracefully in that case.
+CTO_PY=""
+for _cto_py in python3 python py; do
+  if command -v "$_cto_py" >/dev/null 2>&1 && "$_cto_py" -c "" >/dev/null 2>&1; then
+    CTO_PY="$_cto_py"
+    break
+  fi
+done
+
 if [ "${CTO_GHOST_SCAN_DISABLE:-0}" = "1" ]; then
   exit 0
 fi
@@ -36,7 +49,7 @@ fi
 mkdir -p ".claude/sessions"
 touch "$SESSION_MARKER"
 
-python3 - "$TOKEN_LOG" "$CLAUDE_MD" << 'PYEOF'
+"$CTO_PY" - "$TOKEN_LOG" "$CLAUDE_MD" << 'PYEOF'
 import sys, re, os
 
 log_path = sys.argv[1]

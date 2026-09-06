@@ -10,6 +10,19 @@
 # INSTALL: cto hooks install stop-session-snapshot
 # Or manually: copy to .claude/hooks/stop-session-snapshot.sh
 
+# ── Python resolution ────────────────────────────────────────────────────
+# On Windows "python3" is intercepted by a Microsoft Store app-execution alias
+# that SATISFIES `command -v` but fails on execution. So each candidate is
+# actually run before being accepted. CTO_PY is empty if none work, and every
+# caller below degrades gracefully in that case.
+CTO_PY=""
+for _cto_py in python3 python py; do
+  if command -v "$_cto_py" >/dev/null 2>&1 && "$_cto_py" -c "" >/dev/null 2>&1; then
+    CTO_PY="$_cto_py"
+    break
+  fi
+done
+
 SNAPSHOT=".claude/sessions/snapshot.md"
 DATE=$(date +"%Y-%m-%d %H:%M")
 
@@ -50,7 +63,7 @@ APPROX_TOKENS=$(echo "$WORD_COUNT * 13 / 10" | bc 2>/dev/null || echo "?")
 # --- Last task context from transcript ---
 LAST_TASK=""
 STDIN_JSON=$(cat)
-TRANSCRIPT=$(echo "$STDIN_JSON" | python3 -c "
+TRANSCRIPT=$(echo "$STDIN_JSON" | "$CTO_PY" -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -61,7 +74,7 @@ except:
 
 if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
   # Extract last assistant message text (last 120 chars of last assistant turn)
-  LAST_TASK=$(python3 - "$TRANSCRIPT" <<'PYEOF'
+  LAST_TASK=$("$CTO_PY" - "$TRANSCRIPT" <<'PYEOF'
 import sys, json
 
 transcript_path = sys.argv[1]

@@ -13,13 +13,26 @@
 # CONFIGURE (optional):
 #   CTO_PATH_GUARD_DISABLE=1  — bypass all checks
 
+# ── Python resolution ────────────────────────────────────────────────────
+# On Windows "python3" is intercepted by a Microsoft Store app-execution alias
+# that SATISFIES `command -v` but fails on execution. So each candidate is
+# actually run before being accepted. CTO_PY is empty if none work, and every
+# caller below degrades gracefully in that case.
+CTO_PY=""
+for _cto_py in python3 python py; do
+  if command -v "$_cto_py" >/dev/null 2>&1 && "$_cto_py" -c "" >/dev/null 2>&1; then
+    CTO_PY="$_cto_py"
+    break
+  fi
+done
+
 if [ "${CTO_PATH_GUARD_DISABLE:-0}" = "1" ]; then
   exit 0
 fi
 
 # Read transcript path from stdin JSON
 STDIN_JSON=$(cat)
-TRANSCRIPT=$(echo "$STDIN_JSON" | python3 -c "
+TRANSCRIPT=$(echo "$STDIN_JSON" | "$CTO_PY" -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -33,7 +46,7 @@ if [ -z "$TRANSCRIPT" ] || [ ! -f "$TRANSCRIPT" ]; then
 fi
 
 # Extract and check paths via Python
-RESULT=$(python3 - "$TRANSCRIPT" <<'PYEOF'
+RESULT=$("$CTO_PY" - "$TRANSCRIPT" <<'PYEOF'
 import sys, os, re, json
 
 transcript_path = sys.argv[1]
