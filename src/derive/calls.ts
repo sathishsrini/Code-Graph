@@ -126,9 +126,35 @@ export interface DerivedCall {
   filePath: string;
   /** 1-based, for humans and for `edges.line`. */
   line: number;
+  /**
+   * 0-based column of the call site.
+   *
+   * Needed to tell a call made INSIDE an inline function from the call that
+   * registers it: `fastify.addHook('onRequest', async () => {` puts both on
+   * one line, and by line alone the hook appears to call `addHook` itself.
+   */
+  col: number;
   confidence: CallConfidence;
   /** True when the caller is a module rather than a function. */
   fromModuleScope: boolean;
+}
+
+/**
+ * A call site whose target could not be named (R11).
+ *
+ * Stored, never dropped. A tool that hides what it could not analyse converts
+ * an unknown into a false negative, which is strictly worse: the reader has no
+ * way to tell "nothing here" from "we could not look".
+ */
+export interface UnresolvedCall {
+  /** Enclosing definition — the caller, which IS known. */
+  srcSymbol: string;
+  filePath: string;
+  line: number;
+  col: number;
+  /** Whatever SCIP did resolve — usually a package or module symbol. */
+  target: string;
+  reason: string;
 }
 
 export interface DeriveStats {
@@ -142,11 +168,26 @@ export interface DeriveStats {
   inferred: number;
   fromModuleScope: number;
   skipped: Record<string, number>;
+  /** Documents excluded by `allowDocument` -- listed, not silently dropped. */
+  skippedDocuments: string[];
 }
 
 export interface DeriveResult {
   calls: DerivedCall[];
+  /** Call sites whose target could not be named. A feature, not a leak (R11). */
+  unresolved: UnresolvedCall[];
   stats: DeriveStats;
+}
+
+/**
+ * Is this symbol a package root or a file module, rather than a nested
+ * namespace? Both forms end in `/`; only the shallow ones mean "we resolved
+ * the container but not the member".
+ */
+function isModuleLike(symbol: string): boolean {
+  const { descriptors } = parseSymbol(symbol);
+  if (descriptors.length === 0) return true;
+  return descriptors.every((d) => d.kind === "namespace");
 }
 
 interface Body {
@@ -212,10 +253,24 @@ export interface DeriveOptions {
    * raises the false-positive rate to ~83%, so only do that deliberately.
    */
   sources?: SourceProvider | null;
+  /**
+   * Second gate on which documents count, checked against the repo's declared
+   * include/exclude (R13, OPEN-1).
+   *
+   * The indexer is pointed at a generated tsconfig covering exactly this set,
+   * so in the normal case this changes nothing. It is here because the failure
+   * it guards is silent: `40-kri-router/tsconfig.json` is `{}`, and an indexer
+   * run without the generated config yields 52 confident edges describing
+   * `src/**` -- a scaffold that never executes -- and none from the live
+   * `server.js`. Documents rejected here are counted in
+   * `stats.skippedDocuments`, never dropped quietly.
+   */
+  allowDocument?: (relativePath: string) => boolean;
 }
 
 export function deriveCalls(index: ScipIndex, options: DeriveOptions = {}): DeriveResult {
   const skipped: Record<string, number> = {};
+  const unresolved: UnresolvedCall[] = [];
   const sources = options.sources === undefined
     ? createFsSourceProvider(index.projectRoot)
     : options.sources;
@@ -234,7 +289,13 @@ export function deriveCalls(index: ScipIndex, options: DeriveOptions = {}): Deri
   // Every symbol defined anywhere in this index. Used for the certain/inferred
   // split and to drop references to things we never saw defined.
   const definedHere = new Set<string>();
-  for (const doc of index.documents) {
+  const allow = options.allowDocument ?? (() => true);
+  const documents = index.documents.filter((d) => allow(d.relativePath));
+  const skippedDocuments = index.documents
+    .filter((d) => !allow(d.relativePath))
+    .map((d) => d.relativePath);
+
+  for (const doc of documents) {
     for (const occ of doc.occurrences) {
       if (hasRole(occ.symbolRoles, ROLE_DEFINITION)) definedHere.add(occ.symbol);
     }
@@ -249,7 +310,7 @@ export function deriveCalls(index: ScipIndex, options: DeriveOptions = {}): Deri
   let definitions = 0;
   let bodyCount = 0;
 
-  for (const doc of index.documents) {
+  for (const doc of documents) {
     // M2: bodies are the definition occurrences carrying an enclosingRange.
     const bodies: Body[] = [];
     for (const occ of doc.occurrences) {
@@ -289,11 +350,6 @@ export function deriveCalls(index: ScipIndex, options: DeriveOptions = {}): Deri
       // Function-valued parameters (callbacks) are real calls for the same
       // reason. The call-site check below is a much stronger discriminator and
       // makes a descriptor-kind proxy unnecessary.
-      if (isContainer(occ.symbol)) {
-        // A bare module reference is an import relationship, not a call.
-        bump(skipped, "container"); continue;
-      }
-
       // The decisive filter: is this identifier actually followed by a call?
       // Without it the false-positive rate measured ~83% — JSX elements and
       // attributes, property reads and type members are indistinguishable from
@@ -317,6 +373,33 @@ export function deriveCalls(index: ScipIndex, options: DeriveOptions = {}): Deri
         bump(skipped, "self"); continue;
       }
 
+      // A namespace descriptor reached here means the source says `x(...)` but
+      // SCIP could only resolve `x` to a whole package. In untyped CommonJS
+      // that is the normal outcome for `const axios = require('axios')`, and
+      // `axios(config)` is the outbound HTTP call — the single most valuable
+      // edge in a router service.
+      //
+      // This check sits AFTER the call-site test on purpose. Running it before
+      // (as the first revision did) drops the occurrence without ever asking
+      // whether it was a call, so the edge disappears into a `container` tally
+      // and the tree shows `forward` calling nothing at all.
+      if (isContainer(occ.symbol)) {
+        const parsed = parseSymbol(occ.symbol);
+        if (parsed.descriptors.length === 0 || isModuleLike(occ.symbol)) {
+          unresolved.push({
+            srcSymbol: caller.symbol,
+            filePath: doc.relativePath,
+            line: occ.range.startLine + 1,
+            col: occ.range.startChar,
+            target: occ.symbol,
+            reason: "callee resolved to a package or module, not to a function",
+          });
+          bump(skipped, "unresolvedTarget");
+          continue;
+        }
+        bump(skipped, "container"); continue;
+      }
+
       const confidence: CallConfidence =
         definedHere.has(occ.symbol) ? "certain"
         : packages.has(packageOf(occ.symbol)) ? "certain"
@@ -327,6 +410,7 @@ export function deriveCalls(index: ScipIndex, options: DeriveOptions = {}): Deri
         dstSymbol: occ.symbol,
         filePath: doc.relativePath,
         line: occ.range.startLine + 1,
+        col: occ.range.startChar,
         confidence,
         fromModuleScope: caller.isModule,
       });
@@ -335,8 +419,10 @@ export function deriveCalls(index: ScipIndex, options: DeriveOptions = {}): Deri
 
   return {
     calls,
+    unresolved,
     stats: {
-      documents: index.documents.length,
+      documents: documents.length,
+      skippedDocuments,
       occurrences,
       definitions,
       references: occurrences - definitions,

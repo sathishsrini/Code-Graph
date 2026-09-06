@@ -212,7 +212,7 @@ describe("deriveCalls", () => {
 
   test("dedupe collapses identical src/dst/file/line rows", () => {
     const one = {
-      srcSymbol: "a", dstSymbol: "b", filePath: "f.ts", line: 1,
+      srcSymbol: "a", dstSymbol: "b", filePath: "f.ts", line: 1, col: 0,
       confidence: "certain" as const, fromModuleScope: false,
     };
     assert.equal(dedupe([one, { ...one }, { ...one, line: 2 }]).length, 2);

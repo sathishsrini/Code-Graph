@@ -8,15 +8,20 @@
 import { parseArgs } from "node:util";
 import { resolve, join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { loadConfig, repoByName, ConfigError } from "./config/repos.ts";
+import { existsSync } from "node:fs";
+import {
+  loadConfig, repoByName, ConfigError, type RepoConfig,
+} from "./config/repos.ts";
 import { FactStore } from "./store/db.ts";
 import {
   ScipProtobufReader, summarize, roleNames, syntaxKindLabel,
   ROLE_DEFINITION, hasRole,
 } from "./static/scip/reader.ts";
 import { displayNameOf } from "./static/scip/symbol.ts";
-import { deriveCalls, dedupe } from "./derive/calls.ts";
-import { readBootDump } from "./boot/dump.ts";
+import { deriveCalls, dedupe, createFsSourceProvider } from "./derive/calls.ts";
+import { readBootDump, findRoute } from "./boot/dump.ts";
+import { buildFlow, renderFlow } from "./query/flow.ts";
+import { runScipTypescript, documentAllowed } from "./static/scip/runner.ts";
 
 const DEFAULT_DB = ".codeintel/graph.db";
 const DEFAULT_CONFIG = "config/repos.json";
@@ -31,14 +36,19 @@ COMMANDS
   config check        Validate config/repos.json and print the resolved repos
   scip dump           Summarise a .scip index and sample its symbols
   derive calls        Derive CALLS edges from a .scip index (P0-T6)
+  scip index          Run scip-typescript over a repo's declared file set (P0-T3)
   boot dump           Boot a service and read its routes + hook chains (P0-T8)
+  flow                Ordered chain + call tree for one endpoint (P0-T9)
   help                Show this message
 
 OPTIONS
   --db <path>         Database path            (default: ${DEFAULT_DB})
   --config <path>     Config path              (default: ${DEFAULT_CONFIG})
   --index <path>      scip dump: path to a .scip file
-  --repo <name>       boot dump: repo from config/repos.json
+  --repo <name>       boot dump / scip index / flow: repo from config/repos.json
+  --method <verb>     flow: HTTP method
+  --path <url>        flow: route url as the framework reports it
+  --depth <n>         flow: call tree depth cap    (default: 12)
   --out <path>        boot dump: where to write the JSON artifact
   --sample <n>        scip dump: symbols to print   (default: 20)
   --reset             db bootstrap: delete an existing database first
@@ -54,6 +64,9 @@ interface Options {
   config: string;
   index: string;
   repo: string;
+  method: string;
+  path: string;
+  depth: number;
   out: string;
   sample: number;
   reset: boolean;
@@ -72,6 +85,9 @@ function main(argv: string[]): number {
         config: { type: "string" },
         index: { type: "string" },
         repo: { type: "string" },
+        method: { type: "string" },
+        path: { type: "string" },
+        depth: { type: "string" },
         out: { type: "string" },
         sample: { type: "string" },
         reset: { type: "boolean", default: false },
@@ -93,6 +109,9 @@ function main(argv: string[]): number {
     config: values.config ?? DEFAULT_CONFIG,
     index: values.index ?? "",
     repo: values.repo ?? "",
+    method: values.method ?? "",
+    path: values.path ?? "",
+    depth: values.depth ? Number(values.depth) : 12,
     out: values.out ?? "",
     sample: values.sample ? Number(values.sample) : 20,
     reset: values.reset === true,
@@ -124,20 +143,20 @@ function main(argv: string[]): number {
       return cmdConfigCheck(options);
 
     case "scip":
-      if (sub !== "dump") {
-        process.stderr.write(`unknown subcommand: scip ${sub}\n\n${USAGE}`);
-        return 2;
-      }
-      return cmdScipDump(options);
+      if (sub === "dump") return cmdScipDump(options);
+      if (sub === "index") return cmdScipIndex(options);
+      process.stderr.write(`unknown subcommand: scip ${sub}\n\n${USAGE}`);
+      return 2;
 
     case "boot":
       if (sub !== "dump") {
-        process.stderr.write(`unknown subcommand: boot ${sub}
-
-${USAGE}`);
+        process.stderr.write(`unknown subcommand: boot ${sub}\n\n${USAGE}`);
         return 2;
       }
       return cmdBootDump(options);
+
+    case "flow":
+      return cmdFlow(options);
 
     case "derive":
       if (sub !== "calls") {
@@ -291,6 +310,145 @@ function cmdScipDump(options: Options): number {
  * foreign application: that app can throw, hang, open handles or call
  * process.exit, and none of that should be able to take the CLI with it.
  */
+/**
+ * Resolve one repo from config, or explain precisely why not.
+ *
+ * Shared by every repo-scoped command so the failure text is identical
+ * wherever it comes from.
+ */
+function resolveRepo(options: Options): RepoConfig | number {
+  if (!options.repo) {
+    process.stderr.write("this command requires --repo <name from config/repos.json>\n");
+    return 2;
+  }
+  let config;
+  try {
+    config = loadConfig(options.config, { checkPaths: options.checkPaths });
+  } catch (e) {
+    if (e instanceof ConfigError) {
+      process.stderr.write(`config error: ${e.message}\n`);
+      return 1;
+    }
+    throw e;
+  }
+  const repo = repoByName(config, options.repo);
+  if (!repo) {
+    process.stderr.write(`no repo named "${options.repo}" in ${options.config}\n`);
+    return 1;
+  }
+  return repo;
+}
+
+function defaultIndexPath(repo: RepoConfig): string {
+  return join(".codeintel", "scip", `${repo.name}.scip`);
+}
+
+/**
+ * Run the SCIP indexer over exactly the repo's declared file set (P0-T3).
+ *
+ * The generated tsconfig is the whole point: without it `40-kri-router` indexes
+ * its dead `src/` scaffold and none of the live `server.js`, which yields a
+ * confident graph of a system that does not run (docs/measurements.md M7).
+ */
+function cmdScipIndex(options: Options): number {
+  const repo = resolveRepo(options);
+  if (typeof repo === "number") return repo;
+  if (repo.lang === "py") {
+    process.stderr.write(`scip index: ${repo.name} is Python; scip-python is P1-T3.\n`);
+    return 2;
+  }
+
+  const out = options.out || defaultIndexPath(repo);
+  const result = runScipTypescript(repo, out, { maxOldSpaceMb: 8192 });
+
+  if (options.json) {
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    return result.ok ? 0 : 1;
+  }
+
+  process.stdout.write(
+    `repo       : ${repo.name}\n` +
+    `root       : ${repo.rootPath}\n` +
+    `include    : ${repo.include.join(", ") || "(everything)"}\n` +
+    `exclude    : ${repo.exclude.join(", ") || "(nothing)"}\n` +
+    `tsconfig   : generated, then removed\n` +
+    `output     : ${result.outputPath}\n` +
+    `duration   : ${result.durationMs} ms\n`,
+  );
+  if (!result.ok) {
+    process.stderr.write(`\nscip index FAILED (status ${result.status})\n${result.stderr}\n`);
+    return 1;
+  }
+  process.stdout.write(`status     : ok\n`);
+  return 0;
+}
+
+/**
+ * endpoint_flow for one route (P0-T9) — the Phase 0 exit criterion.
+ *
+ * Reads both channels: the boot dump for the ordered chain, the SCIP index for
+ * the call tree beneath it. Neither alone answers the question.
+ */
+function cmdFlow(options: Options): number {
+  const repo = resolveRepo(options);
+  if (typeof repo === "number") return repo;
+  if (!options.method || !options.path) {
+    process.stderr.write("flow requires --method <verb> and --path <url>\n");
+    return 2;
+  }
+
+  const bootPath = resolve(join(".codeintel", "boot", `${repo.name}.json`));
+  const indexPath = resolve(options.index || defaultIndexPath(repo));
+  for (const [what, p, how] of [
+    ["boot dump", bootPath, `node src/cli.ts boot dump --repo ${repo.name}`],
+    ["scip index", indexPath, `node src/cli.ts scip index --repo ${repo.name}`],
+  ] as const) {
+    if (!existsSync(p)) {
+      process.stderr.write(`flow: no ${what} at ${p}\n  build it with: ${how}\n`);
+      return 1;
+    }
+  }
+
+  const dump = readBootDump(bootPath);
+  const route = findRoute(dump, options.method, options.path);
+  if (!route) {
+    process.stderr.write(
+      `flow: ${dump.service} has no route ${options.method.toUpperCase()} ${options.path}\n` +
+      `  known routes:\n` +
+      dump.routes.map((r) => `    ${r.method} ${r.url}`).join("\n") + "\n",
+    );
+    return 1;
+  }
+
+  const index = new ScipProtobufReader().read(indexPath);
+  const { calls, unresolved, stats } = deriveCalls(index, {
+    allowDocument: (rel) => documentAllowed(repo, rel),
+  });
+  const flow = buildFlow(dump, route, dedupe(calls), index, {
+    maxDepth: options.depth,
+    localPackages: new Set([repo.name, repo.serviceName]),
+    unresolved,
+    // Needed to bound anonymous hooks, which have no SCIP definition of their
+    // own and would otherwise root their call tree at the whole module.
+    sources: createFsSourceProvider(index.projectRoot || repo.rootPath),
+  });
+
+  if (options.json) {
+    process.stdout.write(JSON.stringify(flow, null, 2) + "\n");
+    return 0;
+  }
+
+  process.stdout.write(renderFlow(flow));
+  if (stats.skippedDocuments.length > 0) {
+    process.stdout.write(
+      `  ${stats.skippedDocuments.length} document(s) in the index are outside ` +
+      `the declared file set and were ignored:\n` +
+      stats.skippedDocuments.map((d) => `    ${d}`).join("\n") + "\n",
+    );
+  }
+  return 0;
+}
+
 function cmdBootDump(options: Options): number {
   if (!options.repo) {
     process.stderr.write("boot dump requires --repo <name from config/repos.json>\n");

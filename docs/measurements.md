@@ -274,4 +274,125 @@ never as *"no auth"*.
 
 ---
 
-**Last Updated**: 2026-09-06
+## M7 — The Phase 0 gate: `flow` on `POST /api/v1/po`
+
+**Task**: P0-T9 · **Date**: 2026-09-07 · **Gate**: the printed tree must match
+what a senior developer would draw by hand.
+
+```bash
+node src/cli.ts scip index --repo 40-kri-router
+node src/cli.ts boot dump  --repo 40-kri-router
+node src/cli.ts flow       --repo 40-kri-router --method POST --path /api/v1/po
+```
+
+### Indexing the wrong tree, twice over
+
+`40-kri-router/tsconfig.json` is literally `{}`. TypeScript's defaults then take
+over — every `.ts` under the root, no `allowJs` — and the first index of this
+service produced:
+
+| | Documents | CALLS | From the code that runs |
+|---|---|---|---|
+| `--infer-tsconfig`, repo defaults | `src/index.ts`, `src/server.ts`, `src/middleware/auth.ts` | 52 | **0** |
+| **generated tsconfig from `repos.json`** | `server.js` | **90** | **90** |
+
+The first graph is clean, internally consistent, and describes a **non-compiling
+scaffold that never executes**. `config/repos.json` had declared
+`include: ["server.js"]` and `exclude: ["src/**"]` since P0-T2; nothing enforced
+it. `src/static/scip/runner.ts` now generates the tsconfig from that declaration
+and `deriveCalls` re-checks each document against it, so the wrong tree cannot be
+indexed by accident or slip through if the indexer widens its own set.
+
+**This is the failure mode the plan calls OPEN-1, and it is the most dangerous
+one available: not a missing answer, a confident wrong one.**
+
+### An anonymous hook's call tree was the whole module
+
+The boot dump locates the `onRequest` hook at `server.js:36:29`. No SCIP
+definition starts there — an arrow passed straight to `addHook` gets no
+`enclosingRange` — so the join resolved to the enclosing *module*, whose range
+is the file. The hook's "call tree" became every call in `server.js`:
+
+| Root for the onRequest hook | Children |
+|---|---|
+| module (`server.js`) | **31**, including `listen`, `setErrorHandler`, `process.exit` |
+| **scoped by `functionExtent`** | **3** — `Date.now`, `ulid`, `reply.header` |
+
+`functionExtent` re-derives the function's line span from the source, starting
+at the position the boot dump reported. Column precision matters too: the
+registering call `fastify.addHook(...)` sits on the *same line* as the arrow it
+registers, so by line alone the hook appears to call `addHook` itself. `col` was
+added to `DerivedCall` for that one comparison.
+
+### The most valuable edge was being discarded unexamined
+
+`forward` is the single outbound HTTP point in the router, and its tree was
+empty. Line 68 is `return axios(axiosConfig)`; in untyped CommonJS
+`const axios = require('axios')` gives SCIP nothing better than the package
+namespace ``scip-typescript npm axios 1.7.2 `index.d.ts`/``, which the container
+filter rejected — **before the call-site check ever ran**, so it vanished into a
+`container` tally.
+
+The ordering is now reversed: a namespace symbol that survives the call-site
+check is not noise, it is a call whose target could not be named. Two such edges
+exist in this service and both are real:
+
+```
+L14  server.js  -> fastify@4.28.1
+L68  forward()  -> axios@1.7.2      <- the outbound call to the engine
+```
+
+They render as explicit `??` branches. **An omitted branch reads as "this
+function calls nothing", which is a different and false claim from "we could not
+name what it calls."**
+
+### The gate output
+
+```
+POST /api/v1/po    service: 40-kri-router
+
+ROUTE CHAIN  (evidence: boot · confidence: certain)
+   0. onRequest  (anonymous)     server.js:36:29
+   1. handler    proxyToEngine   server.js:168:28
+   2. onResponse (anonymous)     server.js:46:30
+
+CALL TREE  (evidence: scip · ── certain · ╌╌ inferred)
+  handler:
+  proxyToEngine
+     ├── checkUserAuth [certain]  server.js:169
+     │   ├── isPublicAuthPath [certain]
+     │   └── envelopeError [certain] -> nowIso [certain]
+     ├── forward [certain]  server.js:178
+     │   └?? axios — callee resolved to a package, not to a function
+     └── envelopeError [certain]  server.js:265
+```
+
+Verified line by line against `server.js`. It matches.
+
+### Determinism
+
+Phase 0 acceptance criterion 3. Two full `scip index` → `boot dump` → `flow`
+cycles produce byte-identical JSON (15,332 bytes). The one source of
+non-determinism found was `fastify-overview`'s random tracking ids, which is
+part of why it is opt-in (M6).
+
+### What the gate does NOT establish
+
+Stated because the corpus is unrepresentative and the plan says so (§6 OPEN-3):
+
+1. **`scip-typescript` was never stressed.** 347 LOC. R74's "if it OOMs, stop
+   and fix that first" cannot be exercised here.
+2. **Inherited hook chains are not in this corpus.** Zero plugins, zero
+   `preHandler` hooks. Inheritance is verified against
+   `tests/fixtures/fastify-app.cjs`, which was written to supply it.
+3. **Untyped CommonJS resolves badly.** 86 of 306 skipped references are
+   `local N` symbols with no stable identity. The false-positive number in M3
+   was measured on `60-kri-next` for exactly this reason.
+4. **The chain contains no auth check, and the endpoint is still authenticated.**
+   `checkUserAuth` is the handler's first statement. Boot reflection is
+   complete and correct and cannot see it; the call tree finds it. Neither
+   channel alone answers the question — which is the design working, not a gap.
+
+---
+
+**Last Updated**: 2026-09-07
