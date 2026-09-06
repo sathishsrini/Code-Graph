@@ -22,6 +22,7 @@ import { deriveCalls, dedupe, createFsSourceProvider } from "./derive/calls.ts";
 import { readBootDump, findRoute } from "./boot/dump.ts";
 import { buildFlow, renderFlow } from "./query/flow.ts";
 import { runScipTypescript, documentAllowed } from "./static/scip/runner.ts";
+import { scanRepo, renderScan } from "./static/treesitter/report.ts";
 
 const DEFAULT_DB = ".codeintel/graph.db";
 const DEFAULT_CONFIG = "config/repos.json";
@@ -39,6 +40,7 @@ COMMANDS
   scip index          Run scip-typescript over a repo's declared file set (P0-T3)
   boot dump           Boot a service and read its routes + hook chains (P0-T8)
   flow                Ordered chain + call tree for one endpoint (P0-T9)
+  scan                tree-sitter pass: throws, http, datastores, config (P1-T6)
   help                Show this message
 
 OPTIONS
@@ -56,7 +58,8 @@ OPTIONS
   --json              Machine-readable output
 
 STATUS
-  Phase 0 in progress. See plans/code-intelligence-engine-plan-v2.md
+  Phase 1 in progress. See plans/code-intelligence-engine-plan-v2.md for the
+  plan and implementation/RECORD.md for what has actually shipped.
 `;
 
 interface Options {
@@ -74,7 +77,7 @@ interface Options {
   json: boolean;
 }
 
-function main(argv: string[]): number {
+async function main(argv: string[]): Promise<number> {
   let parsed;
   try {
     parsed = parseArgs({
@@ -157,6 +160,9 @@ function main(argv: string[]): number {
 
     case "flow":
       return cmdFlow(options);
+
+    case "scan":
+      return await cmdScan(options);
 
     case "derive":
       if (sub !== "calls") {
@@ -457,6 +463,24 @@ function cmdFlow(options: Options): number {
   return 0;
 }
 
+/**
+ * tree-sitter pass over a repo's declared file set (P1-T6).
+ *
+ * Enumeration goes through the same include/exclude the SCIP indexer uses.
+ * Walking the whole tree instead would extract findings from `src/**` — the
+ * non-compiling scaffold that never executes (measurements M7, delta D6).
+ */
+async function cmdScan(options: Options): Promise<number> {
+  const repo = resolveRepo(options);
+  if (typeof repo === "number") return repo;
+
+  const result = await scanRepo(repo);
+  process.stdout.write(
+    options.json ? `${JSON.stringify(result, null, 2)}\n` : renderScan(result),
+  );
+  return 0;
+}
+
 function cmdBootDump(options: Options): number {
   if (!options.repo) {
     process.stderr.write("boot dump requires --repo <name from config/repos.json>\n");
@@ -613,4 +637,6 @@ function cmdDeriveCalls(options: Options): number {
   return 0;
 }
 
-process.exitCode = main(process.argv.slice(2));
+// Top-level await: the tree-sitter grammars load asynchronously, so `main` is
+// async from P1-T6 onward. Every command's exit code still comes back here.
+process.exitCode = await main(process.argv.slice(2));

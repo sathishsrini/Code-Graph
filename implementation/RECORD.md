@@ -67,7 +67,7 @@ as unnamed locals.
 | P1-T3 scip-python | — | not started |
 | P1-T4 FastAPI boot adapter | — | not started |
 | P1-T5 Next.js static indexing | — | not started |
-| P1-T6 tree-sitter pass | — | not started |
+| P1-T6 tree-sitter pass | `PENDING6` | **done** |
 | P1-T7 cross-service linker | — | not started |
 | P1-T8 route chain expander | — | not started |
 | P1-T9 Semgrep check_kind pack | — | not started |
@@ -118,3 +118,54 @@ file that undoes the old shape, because a reversible migration that has never
 been reversed is untested code. No cross-database consistency check — nothing
 verifies that two engineers' databases are at the same version before their
 outputs are compared.
+
+## P1-T2 — normalizer
+
+**Shipped.** `src/normalize/keys.ts` (canonical keys for all seven node kinds)
+and `src/normalize/graph.ts` (`GraphWriter`, the single door between "an
+extractor found something" and "a row exists").
+
+**Verified.** A symbol in `60-kri-next` joins a route in `40-kri-router` through
+one plain `edges` row, with no mapping table and no repo qualifier. Two
+services writing `mail_events` from different languages land on one
+`datastore` node.
+
+**Does not do.** No key migration path: changing a key format orphans existing
+rows, and nothing detects that. Acceptable while the store is rebuilt per run;
+it stops being acceptable the moment `spans` carries history worth keeping.
+
+## P1-T6 — tree-sitter pass
+
+**Shipped.** `src/static/treesitter/` — `parser.ts` (WASM grammars, lazy and
+cached), `extract.ts` (the four R19 extractors plus URL expressions, env
+bindings and function ranges), `files.ts` (enumeration through the same
+include/exclude the SCIP indexer uses), `ingest.ts` (findings → edges) and
+`report.ts` (the `scan` command).
+
+**Verified.** All four corpus repos scan with zero parse errors:
+
+| Repo | files | THROWS | READS/WRITES | config | http |
+|---|---|---|---|---|---|
+| `40-kri-router` | 1 | 0 | 0 | 7 | 1 |
+| `41-kri-engine` | 1 | 0 | 17 | 8 | 0 |
+| `51-integration` | 1 | 0 | 1 | 8 | 0 |
+| `60-kri-next` | 12 | 3 | 0 | 1 | 1 |
+
+The two findings that matter for the next task are both present and both
+correctly shaped: `axios(axiosConfig)` records the config identifier rather
+than an empty call, and the `PROCUREMENT_BASE_URL` ternary yields two
+destination candidates rather than one.
+
+**Deviations.** [D11](PLAN-DELTAS.md) WASM not native ·
+[D12](PLAN-DELTAS.md) THROWS is 0 on every backend ·
+[D13](PLAN-DELTAS.md) an HTTP call site is not an edge until P1-T7 resolves it.
+
+**Does not do.** SQL comes from string literals only — a query assembled from
+fragments or issued through an ORM is invisible, and a multi-table join reports
+the first table. `.sql` files have no grammar loaded, so
+`41-kri-engine/migrations/001_init.sql` creating `mail_events` is not seen;
+the OPEN-9 coupling is therefore currently one-sided in the graph (the Python
+writer is present, the owning migration is not). Attribution falls back to the
+*file* node when SCIP has no definition covering the line, never to the nearest
+symbol — a `WRITES` edge on a guessed function would be read as fact by R40's
+anomaly query.

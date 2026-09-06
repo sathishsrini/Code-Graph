@@ -200,3 +200,59 @@ DDL guarantees nothing at query time.
 
 **Change:** both pragmas moved to `FactStore`'s constructor, and `migrate()`
 throws if any migration file contains `PRAGMA journal_mode`. Asserted by test.
+
+---
+
+## D11 — tree-sitter runs as WebAssembly, not the native binding · applied · P1-T6
+
+**Plan says:** R19 — "tree-sitter pass". No binding named.
+
+**Change:** `web-tree-sitter` + `tree-sitter-wasms` (prebuilt grammars for
+javascript, typescript, tsx and python), loaded lazily and cached per grammar.
+
+**Why:** the `tree-sitter` npm package compiles C at install time, which is the
+exact dependency the stack picked `node:sqlite` to avoid — plan §5, *"no native
+compilation — avoids better-sqlite3 build pain on Windows"*. Adopting it for
+the parser would have reintroduced the problem one layer down. The WASM build
+is the same parser and keeps the whole toolchain at `npm install` with no
+compiler on the machine.
+
+**Cost, stated:** grammar load is ~30 ms once per language per process, and
+parsing is somewhat slower than native. Neither is measurable against
+`scip-typescript`'s runtime.
+
+---
+
+## D12 — `THROWS` is empty on the corpus, and that is the finding · measured · P1-T6
+
+Not a change to the plan — a confirmation of what §2.12 predicted, recorded
+because the number is the justification for P1-T17 existing at all.
+
+| Repo | THROWS | READS/WRITES | config reads | http call sites |
+|---|---|---|---|---|
+| `40-kri-router` | **0** | 0 | 7 | 1 |
+| `41-kri-engine` | **0** | 17 | 8 | 0 |
+| `51-integration` | **0** | 1 | 8 | 0 |
+| `60-kri-next` | 3 | 0 | 1 | 1 |
+
+Every backend service throws nothing. Failures are `return envelopeError({…})`,
+and a `throw`-only failure surface finds zero on all three. `scan` prints a note
+saying so, because an empty THROWS section otherwise reads as *"nothing can
+fail here"* — which is a different and false claim from *"nothing is thrown."*
+
+---
+
+## D13 — an outbound call site is not an edge yet · applied · P1-T6
+
+`40-kri-router`'s only outbound HTTP call is `axios(axiosConfig)` at
+`server.js:68`, and the URL is built by its *caller*, one indirection away.
+Its destination also forks on an env var: `PROCUREMENT_BASE_URL && isProcurementPath`
+selects between two base URLs in a single ternary.
+
+So the tree-sitter pass records **URL expressions independently of call sites**,
+and records the identifier when a client is called with a config object. The
+ternary yields **two** `UrlExpr` rows rather than one silently-chosen winner —
+which is OPEN-4's requirement and doc §Q.1's *"#1 source of wrong cross-service
+edges"* — and neither becomes an edge until P1-T7 resolves a destination.
+`ingest.ts` deliberately writes no `CALLS_EXTERNAL` row for an HTTP site, so the
+same call cannot be counted twice.

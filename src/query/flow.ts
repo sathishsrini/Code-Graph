@@ -46,7 +46,7 @@ export function weakest(a: Confidence, b: Confidence): Confidence {
 // Joining a boot hook to its SCIP symbol
 // ---------------------------------------------------------------------------
 
-interface DefRange {
+export interface DefRange {
   symbol: string;
   file: string;
   startLine: number;
