@@ -340,3 +340,124 @@ must be reviewed against production helper implementations before P1-T10 inline
 security detection uses it. No evidence or database writes from this module —
 that is the inline detector's job. See [D21](PLAN-DELTAS.md): the pack ships as
 a deterministic YAML-subset loader, not a Semgrep/Opengrep invocation.
+
+## P1-T10 — inline security-check detector
+
+**Shipped.** `src/static/inline-auth.ts` — the detector and its boot wiring.
+Scans only the boot dump's `phase="handler"` entry per route (a middleware that
+does auth is already a boot row, not inline) and resolves FastAPI's
+decorator-leading handler with a line / line+1 probe. Two idioms, two inference
+strengths, both `inferred`/`treesitter`, discriminated by a new
+`route_chain.detail TEXT` column (migration 003, filled only here; boot rows
+keep it NULL):
+
+- **JS sentinel-return** — `const authErr = checkUserAuth(req, reply); if (authErr) return authErr;`
+  binds a reviewed helper name from P1-T9's pack →
+  `detail: reviewed helper checkUserAuth`. A bare call with no guard is emitted
+  too, as `detail: reviewed helper X, unguarded call` — a discarded result does
+  not stop the request, and the label says so. Nested closures are pruned.
+- **Python header-compare-and-early-401** — a header read traced through local
+  bindings (fixpoint over assigned names) or read inline in the guard
+  condition, with a 401 early return →
+  `detail: header-compare-and-early-401 shape, no named helper`. `check_kind`
+  is asserted `"auth"` here (a 401 is auth by definition), not read from the
+  pack — [D23](PLAN-DELTAS.md) records that second provenance.
+
+`ingestInlineChecks` calls `store.deleteChain(routeNodeId, ["treesitter",
+"semgrep"])` before inserting, mirroring the boot channel's `["boot"]` — so
+**un-reviewing a helper removes its rows** instead of leaving a revoked rule
+asserting coverage (the D5 direction). Wired in `src/index/pipeline.ts` (step 5,
+rules loaded from `rules/check-kinds.yml` once); `IndexReport.boot.inline`.
+Stale rows are also covered by provenance delete (R28) when the handler file
+itself changes.
+
+**Verified.** Typecheck clean, **247/247** tests pass (17 in
+`tests/inline-auth.test.ts`, including the no-producer-writes-`semgrep`
+structural scan and an un-review-empties-rows regression). Fresh corpus index:
+
+| Service | inline | evidence | lines |
+|---|---|---|---|
+| `40-kri-router` | 16 | `checkUserAuth` | 169 (via `proxyToEngine`), 292 (mail handler) |
+| `41-kri-engine` | 15 | `serviceAuth` | 196/238/263/282/333/355/374/433/455 |
+| `51-integration` | 2 | shape match | 122 (token), 125 (integration key) |
+
+Zero `'semgrep'` rows. No false positives: the public paths (`auth/login`,
+`auth/register`, `OPTIONS /*`, `health`, `ready`) correctly have no inline row.
+`POST /api/v1/po` now reports authenticated — the point of R26. Un-review
+round-trip measured on the corpus: removing `serviceAuth` and `index --force`
+drops 15→0 engine rows; restoring returns them.
+
+**Deviations.** [D23](PLAN-DELTAS.md) — the evidence decision (`'semgrep'`
+never), the `detail` discriminator, split `check_kind` provenance, the
+unguarded-call label, coverage limits, and the R27 boundary (a rule-file edit
+needs `index --force`; hashing the config into the change set was considered
+and refused there).
+
+**Does not do.** Only the first handler function is scanned — a check inside a
+nested helper the handler calls is the call tree's job (R35–R39), not R26's.
+The JS branch requires a reviewed-pack name, so an unnamed inline JS guard is
+missed. The Python branch is 401-specific; a 403 tenant shape does not match.
+No Semgrep process runs; `'semgrep'` is a reserved future value.
+
+---
+
+# Current status — 2026-09-07 (session end)
+
+## Completed
+
+**Phase 0 gate passed.** P0-T1…T9 all done (`0cf936c`…`ec547be`). Pipeline works
+end to end; two full index → boot → flow cycles byte-identical at 15,332 bytes.
+
+**Phase 1, done: P1-T1, P1-T4, P1-T5, P1-T6, P1-T7, P1-T8, P1-T9, P1-T10,
+P1-T11.** Engine spans boot reflection, tree-sitter static evidence, the
+cross-service linker, the rule pack, inline security detection and incremental
+indexing. `51-integration` remains symbol-less because `scip-python` is
+blocked upstream (P1-T3, [D19/D20](PLAN-DELTAS.md)) — routes, chain entries
+and treesitter findings still land.
+
+## Pending
+
+- **Commit the review-fix set** for P1-T10 as `fix(P1-T10)`: the plan-file
+  restore (staged), `src/static/inline-auth.ts` (delete-before-insert,
+  unguarded-call label, dead fallback removed), `tests/inline-auth.test.ts`
+  (two new regression tests), and this record's new entries with
+  [D23](PLAN-DELTAS.md).
+- **P1-T12 `endpoint_flow` · P1-T13 `impact` · P1-T14 `security_path` ·
+  P1-T15 `context_pack` · P1-T16 MCP · P1-T17 CFG · P1-T18 guard attribution**
+  — all `not started`.
+- **P1-T3 `scip-python`** — wired, blocked upstream (OPEN-5: who provisions a
+  working indexer). `P1-T2` normalizer row reconciled (done in `59972c5`).
+- **OPEN items** — see [`implementation/OPEN-DECISIONS.md`](OPEN-DECISIONS.md).
+
+## Plan changes made during development
+
+The plan file itself is never edited
+([`implementation/README.md`](README.md) rule 2); every divergence is the
+amendment register [`implementation/PLAN-DELTAS.md`](PLAN-DELTAS.md), currently
+**D1–D23**:
+
+| # | In one line | Task |
+|---|---|---|
+| D1 | `syntaxKind` can't filter type positions → symbol-grammar filter | P0-T4/T6 |
+| D2 | the call-site check is a required gate, measured in both directions | P0-T6/T7 |
+| D3 | anonymous hooks are *located*, not renamed | P0-T8 |
+| D4 | `fastify-overview` is opt-in, not the boot source | P0-T8 |
+| D5 | `routeOptions` lacks inherited hooks → owning-instance capture | P0-T8 |
+| D6 | OPEN-1 enforced by a generated tsconfig, not config alone | P0-T3/T9 |
+| D7 | namespace targets are `unresolved_calls`, not noise | P0-T9 |
+| D8 | `edges` identity needs COALESCE, not a plain UNIQUE | P0-T5 |
+| D9 | `spans`/`summaries` ship with their producers | P1-T1 |
+| D10 | pragmas are connection state; migrations are schema | P1-T1 |
+| D11 | tree-sitter runs as WebAssembly, not native | P1-T6 |
+| D12 | THROWS is 0 on every backend — that is the finding | P1-T6 |
+| D13 | an outbound call site is not an edge yet | P1-T6 |
+| D14 | Starlette middleware order is the reverse of source order | P1-T4 |
+| D15 | one downstream shape, two frameworks, unflattened | P1-T4 |
+| D16 | `generatedAt` is empty on purpose (determinism) | P1-T4 |
+| D17 | a trailing `**` tsconfig glob indexed nothing | P1-T11 |
+| D18 | a stale boot artifact surfaces as a named bind error now | P1-T11 |
+| D19 | `scip-python` is patched at install time, on Windows | P1-T3 |
+| D20 | the Python channel is wired and blocked, and says so | P1-T3 |
+| D21 | R20's pack is a YAML-subset loader, not a Semgrep run | P1-T9 |
+| D22 | P1-T7 v1 produced zero correct edges → URL-first resolver | P1-T7 |
+| D23 | P1-T10 evidence is treesitter-only; kind sources are split | P1-T10 |
