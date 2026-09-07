@@ -23,7 +23,8 @@
 // ============================================================================
 
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { RepoConfig } from "../config/repos.ts";
 import type { FactStore } from "../store/db.ts";
 import { GraphWriter } from "../normalize/graph.ts";
@@ -35,9 +36,11 @@ import { documentAllowed } from "../static/scip/runner.ts";
 import { deriveCalls, dedupe, createFsSourceProvider } from "../derive/calls.ts";
 import { buildDefinitionRanges, type DefRange } from "../query/flow.ts";
 import { enumerateFiles } from "../static/treesitter/files.ts";
-import { parseFile, grammarFor } from "../static/treesitter/parser.ts";
+import { parseFile, grammarFor, type ParsedFile } from "../static/treesitter/parser.ts";
 import { extract, type FileFindings } from "../static/treesitter/extract.ts";
 import { ingestFindings } from "../static/treesitter/ingest.ts";
+import { ingestInlineChecks } from "../static/inline-auth.ts";
+import { loadCheckKindRules, type CheckKindRules } from "../static/security-rules.ts";
 import { expandRoutes } from "../derive/routes.ts";
 import { readBootDump } from "../boot/dump.ts";
 import { readFastapiDump, toBootDump } from "../boot/fastapi.ts";
@@ -69,7 +72,10 @@ export interface IndexReport {
   calls: number;
   unresolvedCalls: number;
   treesitter: { throws: number; reads: number; writes: number; configs: number; fileScoped: number };
-  boot: { routes: number; chainEntries: number; unjoined: number; framework: number; handles: number } | null;
+  boot: {
+    routes: number; chainEntries: number; unjoined: number; framework: number;
+    handles: number; inline: number;
+  } | null;
   /** Channels that produced nothing because their artifact was missing. */
   missingArtifacts: string[];
 }
@@ -162,11 +168,17 @@ export async function indexRepo(options: IndexOptions): Promise<IndexReport> {
 
   // --- 4. tree-sitter ------------------------------------------------------
   const treesitter = { throws: 0, reads: 0, writes: 0, configs: 0, fileScoped: 0 };
+  // P1-T10's inline step re-reads handler bodies, so parse trees and findings
+  // are retained by path rather than re-parsed after boot runs.
+  const parsedByPath = new Map<string, ParsedFile>();
+  const findingsByPath = new Map<string, FileFindings>();
   for (const [path, text] of sources) {
     if (!grammarFor(path)) continue;
     const parsed = await parseFile(path, text);
     if (!parsed) continue;
+    parsedByPath.set(path, parsed);
     const findings: FileFindings = extract(parsed);
+    findingsByPath.set(path, findings);
     const counts = ingestFindings({
       writer, store, repoName: repo.name, ranges, fileId: fileIds.get(path)!,
     }, findings);
@@ -186,10 +198,22 @@ export async function indexRepo(options: IndexOptions): Promise<IndexReport> {
         ? toBootDump(readFastapiDump(bootPath))
         : readBootDump(bootPath);
       const stats = expandRoutes(dump, { store, writer, repoId, ranges, fileIds, runId });
+
+      // R26: inline security checks, from the same boot dump's handler lines.
+      // The rule pack is reviewed configuration (P1-T9); loading it here, at
+      // the one place that writes facts, keeps detection out of the extractors.
+      const rules: CheckKindRules = loadCheckKindRules(
+        resolve(join(dirname(fileURLToPath(import.meta.url)), "../../rules/check-kinds.yml")),
+      );
+      const inline = ingestInlineChecks(dump.routes, {
+        store, writer, service: dump.service, repoId, fileIds, runId,
+        rules, parsedByPath, findingsByPath,
+      });
+
       boot = {
         routes: stats.routes, chainEntries: stats.chainEntries,
         unjoined: stats.unjoined, framework: stats.framework,
-        handles: stats.handlesEdges,
+        handles: stats.handlesEdges, inline,
       };
     } else {
       // Named, not silently skipped: "no boot artifact" and "this service has

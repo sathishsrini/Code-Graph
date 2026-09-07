@@ -95,6 +95,8 @@ export interface ChainInput {
   evidenceKind: EvidenceKind;
   fileId?: number | null;
   line?: number | null;
+  /** P1-T10's reviewed-helper-vs-shape discriminator. Boot rows leave it null. */
+  detail?: string | null;
   runId: number;
 }
 
@@ -399,8 +401,8 @@ export class FactStore {
     this.db.prepare(
       `INSERT INTO route_chain
          (route_node_id, position, phase, symbol_node_id, key, name, check_kind,
-          origin, inherited_from, confidence, evidence_kind, file_id, line, run_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          origin, inherited_from, confidence, evidence_kind, file_id, line, detail, run_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(route_node_id, phase, position) DO UPDATE SET
          symbol_node_id = excluded.symbol_node_id,
          key            = excluded.key,
@@ -412,11 +414,13 @@ export class FactStore {
          evidence_kind  = excluded.evidence_kind,
          file_id        = excluded.file_id,
          line           = excluded.line,
+         detail         = excluded.detail,
          run_id         = excluded.run_id`,
     ).run(
       c.routeNodeId, c.position, c.phase, c.symbolNodeId ?? null, c.key ?? null,
       c.name ?? null, c.checkKind ?? null, c.origin, c.inheritedFrom ?? null,
-      c.confidence, c.evidenceKind, c.fileId ?? null, c.line ?? null, c.runId,
+      c.confidence, c.evidenceKind, c.fileId ?? null, c.line ?? null, c.detail ?? null,
+      c.runId,
     );
   }
 

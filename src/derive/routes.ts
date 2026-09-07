@@ -170,6 +170,7 @@ export interface StoredChainRow {
   evidenceKind: string;
   symbolKey: string | null;
   line: number | null;
+  detail: string | null;
 }
 
 /**
@@ -183,7 +184,7 @@ export interface StoredChainRow {
 export function readChain(store: FactStore, routeNodeId: number): StoredChainRow[] {
   const rows = store.raw().prepare(
     `SELECT rc.position, rc.phase, rc.name, rc.key, rc.check_kind, rc.origin,
-            rc.inherited_from, rc.confidence, rc.evidence_kind, rc.line,
+            rc.inherited_from, rc.confidence, rc.evidence_kind, rc.line, rc.detail,
             n.key AS symbol_key
        FROM route_chain rc
        LEFT JOIN nodes n ON n.id = rc.symbol_node_id
@@ -203,5 +204,6 @@ export function readChain(store: FactStore, routeNodeId: number): StoredChainRow
     evidenceKind: String(r["evidence_kind"]),
     symbolKey: (r["symbol_key"] as string | null) ?? null,
     line: r["line"] === null ? null : Number(r["line"]),
+    detail: (r["detail"] as string | null) ?? null,
   }));
 }

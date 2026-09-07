@@ -44,7 +44,9 @@ export function renderIndexReport(reports: IndexReport[]): string {
       const gap = r.boot.unjoined > 0 ? `   <-- ${r.boot.unjoined} unjoined` : "";
       lines.push(
         `  boot       : ${r.boot.routes} routes, ${r.boot.chainEntries} chain entries, ` +
-        `${r.boot.handles} HANDLES${gap}`,
+        `${r.boot.handles} HANDLES` +
+        (r.boot.inline > 0 ? `, ${r.boot.inline} inline auth checks (inferred)` : "") +
+        gap,
       );
       if (r.boot.framework > 0) {
         lines.push(

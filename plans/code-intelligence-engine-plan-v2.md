@@ -459,7 +459,7 @@ No item introduces an LLM-written row that a traversal treats as fact (R63).
 | **P1-T7** | **Cross-service linker** (R31): call sites → base-URL resolution → path-template matching. Study `api-ghost-hunter`'s matcher. Must handle a wrapper indirection and template-literal paths. Hand-written service-URL map is the highest-priority resolution source. | P1-T6, P1-T4 | `src/derive/cross-service.ts` + `unresolved_calls` rows | Every produced edge is `inferred`; every non-match logged with a `reason`; env-conditional destinations produce **two** candidate edges or one `unresolved`, never one silently-wrong edge |
 | **P1-T8** | Route chain expander (R32) + `HANDLES` edges from boot output. | P1-T4, P0-T8 | Populated `route_chain` | Ordering preserved exactly as boot reported; `inherited_from` populated |
 | **P1-T9** | Semgrep/Opengrep `check_kind` rule pack (R20), maintained as a reviewed config file. | P1-T8 | `rules/check-kinds.yml` + runner | Rules classify the corpus's real helper names; output is a config diff for human review, never a direct DB write |
-| **P1-T10** | **Inline security-check detector (R26)** — your addition. Detect security-helper calls inside handler bodies (the sentinel-return idiom in JS, the header-compare-and-early-401 idiom in Python) and emit `route_chain` rows at `phase='handler_inline'`, `confidence='inferred'`, `evidence_kind='semgrep'` or `'treesitter'`. | P1-T9 | `src/static/inline-auth.ts` + rules | Corpus routes protected by inline checks are no longer reported as unauthenticated; rows are clearly distinguishable from boot rows by `phase` **and** `confidence` |
+| **P1-T10** | **Inline security-check detector (R26)** — your addition. Detect security-helper calls inside handler bodies (the sentinel-return idiom in JS, the header-compare-and-early-401 idiom in Python) and emit `route_chain` rows at `phase='handler_inline'`, `confidence='inferred'`, `evidence_kind='treesitter'` **only** — never `'semgrep'` (see the note after the requirements mapping). The reviewed-helper-vs-shape discriminator is written to `route_chain.detail` (migration 003, filled only here). | P1-T9 | `src/static/inline-auth.ts` + migration 003 + rules | Corpus routes protected by inline checks are no longer reported as unauthenticated; rows are clearly distinguishable from boot rows by `phase` **and** `confidence`; the R40 matrix distinguishes a reviewed-helper binding from a shape match via `detail`; a test asserts nothing writes `'semgrep'` |
 | **P1-T11** | Incremental indexing (R27–R29): content hash → changed set → provenance delete → re-insert → re-run affected derivations. | P1-T1 | `src/index/incremental.ts` | **Test: change one file, confirm only its rows are replaced and nothing else moves.** Nodes survive; edges into the changed file from unchanged files survive |
 | **P1-T12** | `endpoint_flow` (R35, R36): recursive CTE, depth cap 12, cycle guard, `min_conf` propagation, boundary termination, cross-service recursion, `unresolved_calls` attached as explicit unknown branches. | P1-T7, P1-T8, P1-T11 | `src/query/endpoint-flow.ts` | Produces the doc §P.4 tree shape; a path crossing one `inferred` hop is never rendered as fact downstream of that hop |
 | **P1-T13** | `impact` (R37–R39): reverse closure, direct vs transitive vs confidence-segmented, five dependency kinds, fan-in computation and high-fan-in flagging. | P1-T11 | `src/query/impact.ts` | Output is segmented as CERTAIN / INFERRED / UNKNOWN; a high-fan-in utility is flagged rather than listing every endpoint |
@@ -734,6 +734,35 @@ P1-T6 ─► P1-T17 ─► P1-T18 ─► P2-T12
 | **R75, R76 (CFG extraction — v2)** | **P1-T17** |
 | **R77 (guard attribution — v2)** | **P1-T18** |
 | **R78 (green/red path rendering — v2)** | **P2-T12** |
+
+**P1-T10 `evidence_kind`, settled 2026-09-07.** The task row above once read
+`evidence_kind='semgrep'` or `'treesitter'`; that disjunction is false and the
+row now says so. `treesitter` is the only true branch:
+
+- **P1-T10 always writes `evidence_kind='treesitter'`.** No Semgrep process
+  runs in this task. Writing `'semgrep'` would put a false value in the
+  provenance column the confidence model and R28's provenance delete rest on:
+  A future real Semgrep pass owns `evidence_kind='semgrep'`, so a row P1-T10
+  wrote under that value would be silently deleted on that pass's first
+  incremental run — the D18 failure shape in provenance. When a real pass
+  lands, whoever flips the writer does so visibly, in review.
+- **`'semgrep'` stays in the CHECK constraint.** R72's concern is a table that
+  lies, not an unused enum value — and the value is not unused forever. The
+  constraint is shared across channels, so removing a value because one task
+  has no runner mistakes one consumer for the schema, and costs a migration
+  now and another when the real pass lands.
+- **A test asserts nothing currently writes `'semgrep'`.** Every corpus inline
+  check must provenance as `treesitter`, so introducing a `semgrep` producer
+  is a deliberate, reviewable flip.
+- **The two idioms are different inference strengths both labelled
+  `inferred`**, and the R40 coverage matrix (P1-T14) must not show them as
+  equal coverage: the JS sentinel-return binds a **human-reviewed helper name**
+  from P1-T9's pack (`reviewed helper checkUserAuth`); the Python
+  header-compare-and-early-401 matches a **source shape** with no named helper
+  (`header-compare-and-early-401 shape, no named helper`). The discriminator
+  lives in a new `route_chain.detail TEXT` column (migration 003), filled
+  solely by P1-T10, so `detail` is empty for every boot row and stays honest
+  by the no-column-without-a-producer rule (R72).
 
 **Dependencies logically ordered.** Yes — see §7.2. No task depends on a
 later-numbered task. The three gates (P0-T9, P1-T16, and the OPEN-1/2/3 block) are
