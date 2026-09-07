@@ -1,0 +1,24 @@
+-- ===========================================================================
+-- 004_chain_extent  —  task P1-T12  (requirement R35)
+-- ===========================================================================
+-- `route_chain.end_line` — the line span of an anonymous hook.
+--
+-- 68% and 89% of chain entries in the two Node services are anonymous arrows
+-- (measurements M6). An arrow passed straight to `addHook` gets no SCIP
+-- definition of its own, so the join lands on the enclosing MODULE, whose
+-- range is the whole file.
+--
+-- M7 recorded what that costs when the tree is built from it: the `onRequest`
+-- hook's call tree became every call in `server.js` — 31 children including
+-- `listen`, `setErrorHandler` and `process.exit` — instead of the 3 it makes.
+-- Phase 0's `flow.ts` fixed it at query time with `functionExtent`, reading
+-- the source. The store-backed query cannot read source, and reintroduced the
+-- defect.
+--
+-- So the extent is derived ONCE, at index time, where the source is already
+-- loaded, and stored. Filled only for entries whose join landed on a namespace
+-- symbol; NULL everywhere else and NULL is "no narrowing needed", never
+-- "unknown" (R72 — the producer is P1-T8's expander).
+-- ===========================================================================
+
+ALTER TABLE route_chain ADD COLUMN end_line INTEGER;

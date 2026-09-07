@@ -23,7 +23,8 @@ import type { BootDump, BootRoute, ChainEntry } from "../boot/dump.ts";
 import type { FactStore } from "../store/db.ts";
 import type { GraphWriter } from "../normalize/graph.ts";
 import { ref } from "../normalize/keys.ts";
-import { symbolAt, type DefRange } from "../query/flow.ts";
+import { symbolAt, functionExtent, type DefRange } from "../query/flow.ts";
+import { symbolKind } from "../static/scip/symbol.ts";
 
 export interface ExpandOptions {
   store: FactStore;
@@ -33,6 +34,13 @@ export interface ExpandOptions {
   ranges: DefRange[];
   /** `files.id` by repo-relative path, for provenance (R28). */
   fileIds: Map<string, number>;
+  /**
+   * File text by repo-relative path.
+   *
+   * Needed to bound an anonymous hook. The store-backed query cannot read
+   * source, so the extent is derived here, once, and stored (migration 004).
+   */
+  sources: Map<string, string>;
   runId: number;
 }
 
@@ -43,6 +51,8 @@ export interface ExpandStats {
   unjoined: number;
   /** Entries that are the framework's own code — never expected to join. */
   framework: number;
+  /** Anonymous hooks whose line span could not be recovered. A gap, not a zero. */
+  unbounded: number;
   handlesEdges: number;
 }
 
@@ -55,9 +65,20 @@ export interface ExpandStats {
  * hook persist — wrong in the one direction that matters for a security answer.
  */
 export function expandRoutes(dump: BootDump, options: ExpandOptions): ExpandStats {
-  const { store, writer, repoId, ranges, fileIds, runId } = options;
+  const { store, writer, repoId, ranges, fileIds, sources, runId } = options;
+  const lineCache = new Map<string, string[]>();
+  const linesFor = (path: string): string[] | null => {
+    const hit = lineCache.get(path);
+    if (hit) return hit;
+    const text = sources.get(path);
+    if (text === undefined) return null;
+    const split = text.split(/\r?\n/);
+    lineCache.set(path, split);
+    return split;
+  };
   const stats: ExpandStats = {
-    routes: 0, chainEntries: 0, unjoined: 0, framework: 0, handlesEdges: 0,
+    routes: 0, chainEntries: 0, unjoined: 0, framework: 0, unbounded: 0,
+    handlesEdges: 0,
   };
 
   const serviceNode = writer.node(ref.service(dump.service));
@@ -100,6 +121,22 @@ export function expandRoutes(dump: BootDump, options: ExpandOptions): ExpandStat
       if (entry.origin === "framework") stats.framework += 1;
       else if (!symbol) stats.unjoined += 1;
 
+      // An anonymous arrow has no definition of its own, so the join landed on
+      // the module — whose range is the whole file. Bound it here, once, where
+      // the source is loaded. Without this the hook's call tree is every call
+      // in the file (M7: 31 children including `listen` and `process.exit`).
+      let endLine: number | null = null;
+      if (symbol && symbolKind(symbol) === "namespace" && entry.file && entry.line !== null) {
+        const lines = linesFor(entry.file);
+        const extent = lines ? functionExtent(lines, entry.line, entry.col ?? 0) : null;
+        if (extent) endLine = extent.endLine;
+        // No extent means the hook could not be bounded. Leaving endLine null
+        // would silently widen it back to the module, so the entry is counted
+        // as a gap instead — the query then shows it unjoined rather than
+        // attributing the whole file to it.
+        else stats.unbounded += 1;
+      }
+
       store.insertChainEntry({
         routeNodeId,
         position: entry.position,
@@ -117,6 +154,7 @@ export function expandRoutes(dump: BootDump, options: ExpandOptions): ExpandStat
         evidenceKind: "boot",
         fileId: entry.file ? fileIds.get(entry.file) ?? null : null,
         line: entry.line,
+        endLine,
         runId,
       });
       stats.chainEntries += 1;

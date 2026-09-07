@@ -73,7 +73,7 @@ as unnamed locals.
 | P1-T9 Semgrep check_kind pack | — | **done** |
 | P1-T10 inline auth detector | `1e5084d` | **done** · review fixes in `fix(P1-T10)` (pending) |
 | P1-T11 incremental indexing | `59972c5` | **done** |
-| P1-T12 `endpoint_flow` | — | not started |
+| P1-T12 `endpoint_flow` | `PENDING12` | **done** |
 | P1-T13 `impact` | — | not started |
 | P1-T14 `security_path` | — | not started |
 | P1-T15 `context_pack` | — | not started |
@@ -461,3 +461,35 @@ amendment register [`implementation/PLAN-DELTAS.md`](PLAN-DELTAS.md), currently
 | D21 | R20's pack is a YAML-subset loader, not a Semgrep run | P1-T9 |
 | D22 | P1-T7 v1 produced zero correct edges → URL-first resolver | P1-T7 |
 | D23 | P1-T10 evidence is treesitter-only; kind sources are split | P1-T10 |
+
+## P1-T12 — `endpoint_flow`
+
+**Shipped.** `src/query/endpoint-flow.ts` (recursive CTE closure, depth cap,
+cycle guard, `min_conf` folded in SQL, boundary termination by node kind,
+cross-service recursion with a visited-route guard, `unresolved_calls` attached
+as explicit unknown branches) and `src/query/endpoint-flow-render.ts`.
+Migration 004 adds `route_chain.end_line`.
+
+The Phase 0 artifact-reading `flow` is kept behind `--artifacts`. It is the only
+way to check a service's flow *without* trusting the store, which is exactly
+what you want when the question is whether the store is right.
+
+**Verified on `POST /api/v1/po`.** Chain of 3 boot entries plus 1 inline auth
+check; `proxyToEngine` calls `checkUserAuth` → `isPublicAuthPath` /
+`envelopeError` → `nowIso`, `forward` twice, then crosses a `REQUESTS` edge into
+`51-integration POST /api/v1/mail/send` and renders that service's own chain and
+its two shape-matched inline checks in place. UNKNOWN carries the `axios` gap,
+the fastify module gap, and OPEN-4's two `PROCUREMENT_BASE_URL` /
+`41-kri-engine` candidates. 263 tests pass.
+
+**Deviations.** [D24](PLAN-DELTAS.md) — four defects found by running it, none
+of which failed a type check or a test first: M7's module-scope regression, a
+path-key collision that duplicated children, inline checks reported as false
+gaps, and `npm:typescript@5.9.3` as the graph's largest external node.
+
+**Does not do.** `min_conf` folds edge confidence only; a path that intersects
+an `unresolved_calls` gap is reported in UNKNOWN but does not downgrade the
+tree's own confidence, because the gap is not on an edge. Remote recursion is
+breadth-unbounded — a service calling twenty others expands all twenty. No
+result cache, so a repeated query re-walks; immeasurable at corpus size and it
+will not be at real size.

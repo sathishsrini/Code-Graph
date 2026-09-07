@@ -123,6 +123,44 @@ export function packageKey(manager: string, name: string, version?: string | nul
 }
 
 /**
+ * Identity for a package a SCIP symbol resolved *through*, which is not always
+ * the package the code depends on.
+ *
+ * Measured on `40-kri-router`: the single largest external node was
+ * `npm:typescript@5.9.3` with 140 edges. Those call sites are
+ * `Date.now()`, `.toString(36)` and `new Date().toISOString()` — ECMAScript
+ * builtins, resolved through TypeScript's bundled `lib.es*.d.ts`. Nothing calls
+ * the TypeScript compiler at runtime, and left alone `impact` would answer
+ * "changing typescript breaks 140 things".
+ *
+ * Three rewrites, each because the resolved package is not the real one:
+ *
+ *   typescript      -> builtin:ecmascript   lib.es*.d.ts is the language
+ *   @types/node     -> builtin:node         the Node standard library
+ *   @types/<x>      -> npm:<x>              a DECLARATION package; the runtime
+ *                                           dependency is <x> itself
+ *
+ * The `@types/<x>` version is dropped deliberately: `@types/react@18.3.3` says
+ * nothing about which React is installed, and carrying it would assert a
+ * version that was never checked.
+ */
+export function resolvePackageIdentity(
+  manager: string, name: string, version?: string | null,
+): string {
+  if (name === "typescript") return "builtin:ecmascript";
+  if (name === "@types/node") return "builtin:node";
+  if (name.startsWith("@types/")) {
+    const runtime = name.slice("@types/".length);
+    // `@types/foo__bar` is the DefinitelyTyped spelling of the scoped package
+    // `@foo/bar`.
+    return packageKey(manager, runtime.includes("__")
+      ? `@${runtime.replace("__", "/")}`
+      : runtime, null);
+  }
+  return packageKey(manager, name, version);
+}
+
+/**
  * An HTTP destination that could not be resolved to a known service:
  * `http:api.stripe.com` or `http:localhost:3003`.
  *

@@ -533,3 +533,59 @@ asserting coverage in the direction that matters (D5's). Hashing the rules
 file into R27's change set was considered and refused: it has no honest home
 short of the `files` table, and a fake per-repo file row for a shared config
 file is the same class of wrong this register exists to name.
+
+---
+
+## D24 — four defects the store-backed flow exposed on first run · corrected · P1-T12
+
+All four passed `tsc` and the suite, and all four were visible the moment the
+query ran against the corpus. Recorded because the pattern is now consistent:
+this project's defects are not type errors, they are *plausible wrong answers*.
+
+**1. M7's defect came back, at a different layer.** The `onRequest` hook's call
+tree was the whole module again — ~60 children including `listen` and
+`process.exit`. Phase 0's `flow.ts` solved this at query time with
+`functionExtent`, reading source; the store-backed query cannot read source, so
+it inherited the module join and expanded it whole.
+
+Fixed by deriving the extent **once, at index time**, where the source is
+already loaded, and storing it (`route_chain.end_line`, migration 004). The
+query narrows depth-0 edges to that span. 60 children → 10, and the 10 are the
+hook's own calls. `stats.unbounded` counts hooks whose span could not be
+recovered, rather than silently widening them back to the module.
+
+**2. Two call sites to one callee collapsed into one path key.** The CTE's path
+was `/<dst>/`, so `envelopeError` calling `nowIso` at three lines produced three
+rows with the same key: all three were pushed as children while the map kept
+only the last, and the grandchildren attached to one arbitrary duplicate. The
+rendered tree showed three identical `nowIso` children, two of them empty.
+Fixed by putting the **edge id** in the path (`<dst>#<edge>/`); the cycle guard
+matches on `'/<dst>#'` so a node id is never confused with a longer one sharing
+its prefix.
+
+**3. Inline security checks were reported as unjoined chain entries.** They
+store a null `symbol_node_id` deliberately — an inline check is a call *site*
+inside a handler, not a chain function — and the gap collector treated any null
+symbol as a failed join. It manufactured a gap in R61's UNKNOWN section, which
+is as dishonest as hiding a real one.
+
+**4. `npm:typescript@5.9.3` was the largest external node in the graph, with
+140 edges.** Those call sites are `Date.now()`, `.toString(36)` and
+`new Date().toISOString()` — ECMAScript builtins that resolve through
+TypeScript's bundled `lib.es*.d.ts`. Nothing calls the TypeScript compiler at
+runtime, and `impact` would have answered *"changing typescript breaks 140
+things"*.
+
+`resolvePackageIdentity` now rewrites the package a symbol resolved *through*
+into the one the code actually depends on:
+
+| Resolved | Identity | Why |
+|---|---|---|
+| `typescript` | `builtin:ecmascript` | `lib.es*.d.ts` is the language, not a dependency |
+| `@types/node` | `builtin:node` | the Node standard library |
+| `@types/<x>` | `npm:<x>` (no version) | a declaration package; the runtime dependency is `<x>`, and the declaration's version says nothing about which `<x>` is installed |
+
+**Renderer, separately:** boundary calls collapse to a counted summary
+(`7 boundary call(s): npm:fastify@4.28.1×6, builtin:ecmascript×1`) with
+`--externals` to list them. The edges stay in the graph — `impact` reads them —
+but naming each one buried the four local calls that answer the question.

@@ -22,6 +22,8 @@ import { deriveCalls, dedupe, createFsSourceProvider } from "./derive/calls.ts";
 import { readBootDump, findRoute } from "./boot/dump.ts";
 import { readFastapiDump, toBootDump } from "./boot/fastapi.ts";
 import { buildFlow, renderFlow } from "./query/flow.ts";
+import { endpointFlow, RouteNotFound } from "./query/endpoint-flow.ts";
+import { renderEndpointFlow } from "./query/endpoint-flow-render.ts";
 import {
   runScipTypescript, runScipPython, documentAllowed,
 } from "./static/scip/runner.ts";
@@ -44,7 +46,7 @@ COMMANDS
   derive calls        Derive CALLS edges from a .scip index (P0-T6)
   scip index          Run scip-typescript over a repo's declared file set (P0-T3)
   boot dump           Boot a service and read its routes + hook chains (P0-T8)
-  flow                Ordered chain + call tree for one endpoint (P0-T9)
+  flow                Ordered chain + call tree for one endpoint (P1-T12)
   scan                tree-sitter pass: throws, http, datastores, config (P1-T6)
   index               Index every repo into the fact store, incrementally (P1-T11)
   help                Show this message
@@ -59,6 +61,9 @@ OPTIONS
   --depth <n>         flow: call tree depth cap    (default: 12)
   --out <path>        boot dump: where to write the JSON artifact
   --sample <n>        scip dump: symbols to print   (default: 20)
+  --artifacts         flow: read a .scip file + boot dump instead of the store
+  --no-remote         flow: stop at the service boundary, do not follow REQUESTS
+  --externals         flow: list every boundary call instead of summarising
   --force             index: re-run every derivation, ignoring the changed set
   --reset             db bootstrap: delete an existing database first
   --skip-path-check   config check: don't verify rootPath exists on disk
@@ -81,6 +86,9 @@ interface Options {
   sample: number;
   reset: boolean;
   force: boolean;
+  fromArtifacts: boolean;
+  noRemote: boolean;
+  externals: boolean;
   checkPaths: boolean;
   json: boolean;
 }
@@ -103,6 +111,9 @@ async function main(argv: string[]): Promise<number> {
         sample: { type: "string" },
         reset: { type: "boolean", default: false },
         force: { type: "boolean", default: false },
+        artifacts: { type: "boolean", default: false },
+        "no-remote": { type: "boolean", default: false },
+        externals: { type: "boolean", default: false },
         // node:util parseArgs has no "--no-x" negation, so this is stated
         // positively. The default remains "do check paths".
         "skip-path-check": { type: "boolean", default: false },
@@ -128,6 +139,9 @@ async function main(argv: string[]): Promise<number> {
     sample: values.sample ? Number(values.sample) : 20,
     reset: values.reset === true,
     force: values.force === true,
+    fromArtifacts: values.artifacts === true,
+    noRemote: values["no-remote"] === true,
+    externals: values.externals === true,
     checkPaths: values["skip-path-check"] !== true,
     json: values.json === true,
   };
@@ -419,12 +433,20 @@ function cmdScipIndex(options: Options): number {
 }
 
 /**
- * endpoint_flow for one route (P0-T9) — the Phase 0 exit criterion.
+ * endpoint_flow for one route.
  *
- * Reads both channels: the boot dump for the ordered chain, the SCIP index for
- * the call tree beneath it. Neither alone answers the question.
+ * Two implementations, deliberately both kept:
+ *
+ *   default   P1-T12, from the store. Every indexed service at once, so an
+ *             outbound call crosses into the remote route's own chain.
+ *   --artifacts  P0-T9, straight from one .scip file and one boot dump. It is
+ *             the Phase 0 gate and the only way to check a service's flow
+ *             WITHOUT trusting the store — which is what you want when the
+ *             question is whether the store is right.
  */
 function cmdFlow(options: Options): number {
+  if (!options.fromArtifacts) return cmdFlowFromStore(options);
+
   const repo = resolveRepo(options);
   if (typeof repo === "number") return repo;
   if (!options.method || !options.path) {
@@ -482,6 +504,47 @@ function cmdFlow(options: Options): number {
     );
   }
   return 0;
+}
+
+/**
+ * endpoint_flow from the fact store (P1-T12).
+ *
+ * `--repo` names a service here rather than selecting artifacts, because the
+ * store holds every service and the flow may leave the one it started in.
+ */
+function cmdFlowFromStore(options: Options): number {
+  if (!options.repo || !options.method || !options.path) {
+    process.stderr.write(
+      "flow requires --repo <service> --method <verb> --path <url>\n" +
+      "  add --artifacts to read a .scip file and boot dump directly (P0-T9)\n",
+    );
+    return 2;
+  }
+
+  const store = new FactStore(options.db);
+  try {
+    const flow = endpointFlow(store, options.repo, options.method, options.path, {
+      maxDepth: options.depth,
+      followRemote: !options.noRemote,
+    });
+    process.stdout.write(
+      options.json ? `${JSON.stringify(flow, null, 2)}\n` : renderEndpointFlow(flow),
+    );
+    return 0;
+  } catch (e) {
+    if (e instanceof RouteNotFound) {
+      process.stderr.write(
+        `flow: ${e.message}\n` +
+        (e.candidates.length === 0
+          ? `  service "${options.repo}" has no routes in the store — run: node src/cli.ts index\n`
+          : `  known routes:\n${e.candidates.map((c) => `    ${c.method} ${c.url}`).join("\n")}\n`),
+      );
+      return 1;
+    }
+    throw e;
+  } finally {
+    store.close();
+  }
 }
 
 /**

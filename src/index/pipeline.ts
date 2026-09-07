@@ -197,7 +197,9 @@ export async function indexRepo(options: IndexOptions): Promise<IndexReport> {
       const dump = repo.framework === "fastapi"
         ? toBootDump(readFastapiDump(bootPath))
         : readBootDump(bootPath);
-      const stats = expandRoutes(dump, { store, writer, repoId, ranges, fileIds, runId });
+      const stats = expandRoutes(dump, {
+        store, writer, repoId, ranges, fileIds, sources, runId,
+      });
 
       // R26: inline security checks, from the same boot dump's handler lines.
       // The rule pack is reviewed configuration (P1-T9); loading it here, at
