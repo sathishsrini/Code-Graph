@@ -11,14 +11,20 @@
 // finding is attributed to the enclosing *file* node instead, never dropped
 // and never attached to a symbol that does not contain it.
 //
-// Everything written here is `inferred`. Not one of these extractors resolves
-// a name through a compiler.
+// The one refinement worth stating twice: the *module* symbol does contain
+// the line, and `symbolAt` returns it, but it is not an owner. Its range is
+// the whole file, so attributing an anonymous arrow's finding to it says
+// "the module called X" — M7's wasted-width claim. Owner is the innermost
+// non-namespace definition, else the file node. P1-T7's `callSiteOwner` and
+// this module both use `ownerSymbol`, and `flow` scopes the module join it
+// keeps for boot hooks with `functionExtent` at query time.
 // ============================================================================
 
 import type { FactStore } from "../../store/db.ts";
 import type { GraphWriter } from "../../normalize/graph.ts";
 import { ref } from "../../normalize/keys.ts";
 import { symbolAt, type DefRange } from "../../query/flow.ts";
+import { symbolKind } from "../scip/symbol.ts";
 import type { FileFindings } from "./extract.ts";
 import { enclosingFunction } from "./extract.ts";
 
@@ -60,7 +66,7 @@ export function ingestFindings(ctx: IngestContext, f: FileFindings): IngestCount
    * ("routes that write with no tenant check") reads exactly these edges.
    */
   const owner = (line: number) => {
-    const symbol = symbolAt(ctx.ranges, f.path, line);
+    const symbol = ownerSymbol(ctx.ranges, f.path, line);
     if (symbol) return ref.symbol(symbol);
     counts.fileScoped += 1;
     return fileNode;
@@ -110,12 +116,32 @@ export function ingestFindings(ctx: IngestContext, f: FileFindings): IngestCount
  * — until the cross-service linker resolves a destination, it is a call site
  * with a URL expression. Writing a `CALLS_EXTERNAL` edge here and then a
  * `REQUESTS` edge there would double-count the same call.
+ *
+ * Shares `ownerSymbol` with `ingestFindings`, so the two channels agree on
+ * the one question both answer: a namespace (module/file) symbol is not an
+ * owner. An anonymous handler has no definition of its own, so its REQUESTS
+ * edge sources from the file node, never from the module — the M7 defect
+ * wearing a different hat (review, 2026-09-07).
  */
 export function callSiteOwner(
   ranges: DefRange[], functions: FileFindings["functions"], path: string, line: number,
 ): { symbol: string | null; functionName: string | null } {
   return {
-    symbol: symbolAt(ranges, path, line) ?? null,
+    symbol: ownerSymbol(ranges, path, line),
     functionName: enclosingFunction(functions, line)?.name ?? null,
   };
+}
+
+/**
+ * The innermost definition at `file:line` that may own a finding.
+ *
+ * Explicitly refuses a `namespace`: that is the module or file, whose range
+ * spans everything, so owning a finding there attributes every call in the
+ * file to one node (M7). Returns null, and the caller falls back to the file
+ * node, which is honest about the width of the claim.
+ */
+function ownerSymbol(ranges: DefRange[], file: string, line: number): string | null {
+  const symbol = symbolAt(ranges, file, line);
+  if (!symbol) return null;
+  return symbolKind(symbol) === "namespace" ? null : symbol;
 }

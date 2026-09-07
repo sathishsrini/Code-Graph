@@ -464,4 +464,37 @@ reported `unjoined`. That is a missing channel, not an empty service.
 
 ---
 
+## M9 — Cross-service linkage on the corpus (P1-T7, post-review)
+
+**Date**: 2026-09-07 · **Task**: P1-T7 · **Gate**: review feedback items 1–2
+
+```bash
+node src/cli.ts index --db .codeintel/graph.db --config config/repos.json --force
+```
+
+| Repo | REQUESTS | unresolved |
+|---|---|---|
+| 40-kri-router | 2 | 3 |
+| 51-integration | 0 | 0 |
+| 60-kri-next | 0 | 1 |
+| **total** | **2** | **4** |
+
+The reviewer's run (pre-fix) reported **2 REQUESTS, 7 unresolved across 15
+files**. The three rows removed by item 1 were all config strings, never calls:
+`main.py:30` ×2 (FastAPI `allow_origins`) and `server.js:41`
+(`Access-Control-Allow-Origin` header default). `unresolved_calls` is for call
+sites whose target could not be named, so a string no HTTP client consumes is
+not that and is no longer written. The remaining four are honest gaps: a
+dynamic path (L127), an env-conditional ternary with two candidates (L176 ×2),
+and a dynamic template in `60-kri-next` (`lib/api.ts:31`).
+
+Item 2 changed no counts and changed one edge's source. With the module symbol
+refused as an owner, the `POST /api/v1/mail/send` REQUESTS edge at
+`server.js:298` sources from the **file node** (`40-kri-router/server.js`), not
+the module symbol; `server.js:216` continues to source from the named function
+symbol `proxyToEngine()`. Verified in the store: `src_kind='file'` vs
+`src_kind='symbol'`.
+
+---
+
 **Last Updated**: 2026-09-07

@@ -70,9 +70,10 @@ const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
  *
  * Each expression is attributed to its enclosing function. A URL only
  * participates if that function (or a callee wrapper it calls by name)
- * contains an HTTP client call — otherwise it is honest noise (a route
- * registration string, a CORS origin) recorded as unresolved, never silently
- * dropped and never resolved as a request.
+ * contains an HTTP client call. A non-consumed string — a route registration,
+ * a CORS origin, a header default — is not an unresolved *call*: R11's row
+ * exists for call sites whose target could not be named, so config that can
+ * never be a request yields neither a request nor a gap row (review, 2026-09-07).
  */
 export function resolveCrossService(input: LinkInput): LinkResult {
   const requests: RequestLink[] = [];
@@ -97,16 +98,14 @@ export function resolveCrossService(input: LinkInput): LinkResult {
     if (bindingDefaultOnly(url, input.findings.envBindings)) continue;
 
     const fn = enclosingFunction(input.findings.functions, url.line);
-    if (!consumedByHttp(fn, input, wrappers, consumption)) {
-      unresolved.push({
-        line: url.line, col: url.col,
-        targetHint: url.baseVar ?? url.literalPath,
-        reason: fn === null
-          ? "URL expression sits outside any function body"
-          : "URL is not consumed by an HTTP call in its enclosing function or a callee wrapper",
-      });
-      continue;
-    }
+    // Not consumed => not a request at this analysis depth, and not a gap.
+    // `reply.header('Access-Control-Allow-Origin', origin || 'http://…')` and
+    // FastAPI's `allow_origins=[…]` are config values; rows for strings that
+    // can never be a call would dilute the "could not resolve this call"
+    // signal that R11's table is for. A module-level URL can only be consumed
+    // by a module-level client call, which itself records an HttpFinding, so
+    // dropping the row loses no edge.
+    if (!consumedByHttp(fn, input, wrappers, consumption)) continue;
 
     const base = resolveBase(url, input.repo, input.repos, bindings);
     if (base === null) {

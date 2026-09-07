@@ -193,14 +193,17 @@ describe("cross-service resolver", () => {
     assert.ok(result.unresolved.some((u) => /dynamic path/.test(u.reason)));
   });
 
-  test("a URL outside any function body is reported, not resolved", () => {
+  test("a module-level URL string is config, not an unresolved call", () => {
     const result = resolveCrossService({
       repo: repo(), repos: [repo(), engine], source: "",
       targets: [],
       findings: findings({ urls: [url(1, 40, null, "http://localhost:3000", false)] }),
     });
+    // A string no HTTP client consumes — an origin whitelist entry — is not a
+    // call whose target could not be named. R11's row is for requests; this
+    // yields neither a request nor a gap.
     assert.equal(result.requests.length, 0);
-    assert.ok(result.unresolved.some((u) => /outside any function body/.test(u.reason)));
+    assert.equal(result.unresolved.length, 0);
   });
 
   test("a bare-path comparison inside a consumed function stays silent", () => {
