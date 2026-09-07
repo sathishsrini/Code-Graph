@@ -77,6 +77,9 @@ describe("JS sentinel-return idiom", () => {
     const checks = await scan(direct, 1);
     assert.equal(checks.length, 1);
     assert.equal(checks[0]!.name, "requireAuth");
+    // A discarded result does not stop the request — the detail says so, so
+    // P1-T14's matrix does not read it as a sentinel-return (fix 3).
+    assert.equal(checks[0]!.detail, "reviewed helper requireAuth, unguarded call");
   });
 
   test("a helper call without the sentinel guard is not a check", async () => {
@@ -291,6 +294,44 @@ describe("ingestInlineChecks — rows, provenance, and the no-semgrep guard", ()
       assert.equal(row["detail"], "reviewed helper checkUserAuth");
       assert.equal(row["line"], 2);
       assert.equal(row["origin"], "handler");
+    } finally { store.close(); }
+  });
+
+  test("un-reviewing a helper empties its rows (delete-before-insert, fix 1)", async () => {
+    const store = new FactStore(join(dir, "unreview.db"));
+    try {
+      const { repoId, runId, routeNodeId } = seedStore(store);
+      store.upsertFile(repoId, "snippet.js", "js", "h1", runId);
+      const writer = new GraphWriter(store, runId, repoId, { localPackages: new Set(["svc"]) });
+      const parsed = await parseFile("snippet.js", [
+        "async function handler(req, reply) {",
+        "  const authErr = checkUserAuth(req, reply);",
+        "  if (authErr) return authErr;",
+        "  return reply.send({ ok: true });",
+        "}",
+      ].join("\n"));
+      assert.ok(parsed);
+      const findings = extract(parsed);
+      const opts = () => ({
+        store, writer, service: "svc", repoId, runId, rules,
+        parsedByPath: new Map([["snippet.js", parsed]]),
+        findingsByPath: new Map([["snippet.js", findings]]),
+        fileIds: new Map([["snippet.js", store.getFile(repoId, "snippet.js")!.id]]),
+      });
+      const count = () => store.raw().prepare(
+        "SELECT COUNT(*) AS n FROM route_chain WHERE route_node_id = ?",
+      ).get(routeNodeId) as { n: number };
+
+      // Reviewed: one row.
+      assert.equal(ingestInlineChecks([bootRoute()], opts()), 1);
+      assert.equal(count().n, 1);
+
+      // Un-review `checkUserAuth`: the same handler now yields no checks, and
+      // the previous run's rows must not survive (the D5 direction — a revoked
+      // rule cannot keep asserting coverage).
+      const without = { byName: new Map([...rules.byName].filter(([h]) => h !== "checkUserAuth")) };
+      assert.equal(ingestInlineChecks([bootRoute()], { ...opts(), rules: without }), 0);
+      assert.equal(count().n, 0);
     } finally { store.close(); }
   });
 

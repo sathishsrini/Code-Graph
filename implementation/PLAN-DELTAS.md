@@ -468,3 +468,68 @@ resolvable cross-service edge) and 4 honest gaps (L176's two ternary branches,
 L127's dynamic path, one unconsumed CORS origin). The frontend resolves
 `BASE` → router and reports its dynamic path honestly. Nine tests encode the
 corpus shapes the earlier fixtures did not.
+
+---
+
+## D23 — P1-T10's evidence is treesitter-only, and the kind sources are split · applied · P1-T10
+
+**Plan says:** P1-T10's task row allowed `evidence_kind='semgrep'` or
+`'treesitter'`. That disjunction is false — no Semgrep process runs in this
+task — and the settlement records here as a delta rather than editing the plan
+(README rule 2). The plan keeps its original wording; this is the amendment.
+
+**Decided — `'treesitter'` is the only true branch:**
+
+- **P1-T10 always writes `evidence_kind='treesitter'`.** Writing `'semgrep'`
+  would put a false value in the provenance column the confidence model and
+  R28's provenance delete rest on. A future *real* Semgrep pass owns
+  `evidence_kind='semgrep'`; a row written under that value early would be
+  silently deleted on that pass's first incremental run — the D18 failure
+  shape in provenance.
+- **`'semgrep'` stays in the CHECK constraint.** R72's concern is a table that
+  lies, not an unused enum value, and the value is not unused forever. Removing
+  it would cost a migration now and another when the real pass lands.
+- **A structural test asserts nothing currently writes `'semgrep'`**, so
+  introducing a producer is a deliberate, reviewable flip.
+
+**The detail discriminator (migration 003).** The two idioms carry different
+inference strengths, both labelled `inferred`, and the R40 matrix (P1-T14) must
+not read them as equal coverage:
+
+| Idiom | Evidence | `detail` |
+|---|---|---|
+| JS sentinel-return | binds a **human-reviewed helper name** from P1-T9's pack | `reviewed helper checkUserAuth` |
+| Python header-compare-and-early-401 | matches a **source shape**, no named helper | `header-compare-and-early-401 shape, no named helper` |
+
+They discriminate through a new `route_chain.detail TEXT` column (migration
+003), filled solely by P1-T10; boot rows keep it NULL, so a row is never
+mistaken for the other channel. R72: no column without a producer.
+
+**`check_kind` has two provenances, and says so.** The JS branch classifies
+through `classifyCheckKind` from the reviewed pack; the Python branch asserts
+`"auth"` from the shape — a 401 early-return is auth by definition and has no
+helper name to classify. Defensible, recovered by `detail`, and now stated in
+both the module and this register.
+
+**An unguarded JS call is a weaker claim and labels itself.** A bare
+`checkUserAuth(req, reply)` whose result is discarded does not stop the
+request; the sentinel-return is evidence the request is stopped. The detector
+emits both, but the bare call is `detail: reviewed helper X, unguarded call`,
+never the sentinel-return label.
+
+**Coverage limits, stated.** Only the boot-reported handler function is
+scanned — a check inside a nested helper the handler calls is the call tree's
+job (R35-R39), not R26's. The JS branch requires a reviewed-pack name, so an
+unnamed inline JS guard is missed. The Python branch is 401-specific; a 403
+tenant shape does not match.
+
+**R27 boundary, stated.** `rules/check-kinds.yml` is reviewed configuration,
+not a repo file, so a rule edit is invisible to R27's file-change set:
+un-reviewing a helper produces no rows on a plain `index`, because nothing is
+`changed`. `index --force` re-derives and clears them — `ingestInlineChecks`
+now calls `deleteChain(routeNodeId, ["treesitter", "semgrep"])` before
+inserting, mirroring the boot channel's `["boot"]`, so a revoked rule stops
+asserting coverage in the direction that matters (D5's). Hashing the rules
+file into R27's change set was considered and refused: it has no honest home
+short of the `files` table, and a fake per-repo file row for a shared config
+file is the same class of wrong this register exists to name.

@@ -13,7 +13,10 @@
 //       returns it when set:
 //         const authErr = checkUserAuth(req, reply);
 //         if (authErr) return authErr;
-//       This binds a *human-reviewed helper name* (P1-T9's pack).
+//       This binds a *human-reviewed helper name* (P1-T9's pack). A bare
+//       reviewed-helper call with no sentinel guard is reported *too,* but
+//       weaker: its result is discarded, so it is not evidence the request is
+//       stopped — `detail` reads "reviewed helper X, unguarded call".
 //
 //   py  header-compare-and-early-401 — an authorization header is read into a
 //       binding, a later `if` compares it, and the branch returns a 401:
@@ -137,6 +140,13 @@ export function ingestInlineChecks(
 
     const checks = detectInBody(parsed, fn, rules);
     const routeNodeId = writer.node(ref.route(service, route.method, route.url));
+    // Wholesale replace, mirroring the boot channel (expandRoutes →
+    // `deleteChain(routeNodeId, ["boot"])`, R24). Un-reviewing a helper —
+    // removing it from rules/check-kinds.yml — must empty the rows it produced,
+    // or a revoked rule keeps asserting coverage. The inline channel owns the
+    // static evidence kinds (`treesitter` today; a future real semgrep pass
+    // joins this channel, never a second boot channel).
+    store.deleteChain(routeNodeId, ["treesitter", "semgrep"]);
     for (const [position, check] of checks.entries()) {
       store.insertChainEntry({
         routeNodeId,
@@ -240,7 +250,7 @@ function detectJsInBody(body: Node, rules: CheckKindRules): InlineCheck[] {
     const helper = node.childForFieldName("function")!.text;
     out.push({
       line: lineOf(node), col: colOf(node), name: helper,
-      checkKind: classifyCheckKind(helper, rules) ?? "auth",
+      checkKind: classifyCheckKind(helper, rules)!,
       detail: `reviewed helper ${helper}`,
     });
   }
@@ -248,8 +258,11 @@ function detectJsInBody(body: Node, rules: CheckKindRules): InlineCheck[] {
     const helper = node.childForFieldName("function")!.text;
     out.push({
       line: lineOf(node), col: colOf(node), name: helper,
-      checkKind: classifyCheckKind(helper, rules) ?? "auth",
-      detail: `reviewed helper ${helper}`,
+      // A bare call whose result is discarded does not stop the request — this
+      // is a weaker claim than the sentinel-return, so the detail says so
+      // (P1-T14's matrix reads `detail`, not the phase).
+      checkKind: classifyCheckKind(helper, rules)!,
+      detail: `reviewed helper ${helper}, unguarded call`,
     });
   }
   return out;
@@ -332,6 +345,11 @@ function detectPythonInBody(body: Node, _rules: CheckKindRules): InlineCheck[] {
 
     const gone = earlyResponse(node);
     if (gone) {
+      // The kind is asserted here, not read from P1-T9's reviewed pack: a 401
+      // early-return is auth by definition, and there is no helper name to
+      // classify. That is a different provenance than the JS branch's
+      // `classifyCheckKind` — recorded in PLAN-DELTAS D23 — and the shape's
+      // `detail` distinguishes it for P1-T14 either way.
       out.push({
         line: lineOf(gone), col: colOf(gone),
         name: null, checkKind: "auth", detail: PY_DETAIL,

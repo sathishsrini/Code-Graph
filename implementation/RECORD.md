@@ -63,7 +63,7 @@ as unnamed locals.
 | Task | Commit | State |
 |---|---|---|
 | P1-T1 full schema + migrations | `887cfcc` | **done** |
-| P1-T2 normalizer | — | not started |
+| P1-T2 normalizer | `59972c5` | **done** |
 | P1-T3 scip-python | `ec5e845` | **wired, blocked upstream** |
 | P1-T4 FastAPI boot adapter | `79fb2e1` | **done** |
 | P1-T5 Next.js static indexing | — | **done** |
@@ -71,7 +71,7 @@ as unnamed locals.
 | P1-T7 cross-service linker | — | **done** |
 | P1-T8 route chain expander | `59972c5` | **done** |
 | P1-T9 Semgrep check_kind pack | — | **done** |
-| P1-T10 inline auth detector | — | not started |
+| P1-T10 inline auth detector | `1e5084d` | **done** · review fixes in `fix(P1-T10)` (pending) |
 | P1-T11 incremental indexing | `59972c5` | **done** |
 | P1-T12 `endpoint_flow` | — | not started |
 | P1-T13 `impact` | — | not started |
