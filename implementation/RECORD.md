@@ -73,7 +73,7 @@ as unnamed locals.
 | P1-T9 Semgrep check_kind pack | — | **done** |
 | P1-T10 inline auth detector | `1e5084d` | **done** · review fixes in `fix(P1-T10)` (pending) |
 | P1-T11 incremental indexing | `59972c5` | **done** |
-| P1-T12 `endpoint_flow` | `PENDING12` | **done** |
+| P1-T12 `endpoint_flow` | `6e3a5a4` | **done** |
 | P1-T13 `impact` | — | not started |
 | P1-T14 `security_path` | — | not started |
 | P1-T15 `context_pack` | — | not started |
