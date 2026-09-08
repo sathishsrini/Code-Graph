@@ -690,7 +690,7 @@ rather than covering for each other.
 
 | Task | Commit | State |
 |---|---|---|
-| **P3-T1 `co_changed` from git** | `PEND` | **done** |
+| **P3-T1 `co_changed` from git** | `a1d409b` | **done** |
 | P3-T2 hierarchical LLM summaries | — | blocked on OPEN-8 (provider not chosen) |
 | P3-T3 FTS5 + embeddings for seeding | — | not started |
 | P3-T4 Joern/Opengrep side-car | — | not started |
