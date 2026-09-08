@@ -493,3 +493,76 @@ tree's own confidence, because the gap is not on an edge. Remote recursion is
 breadth-unbounded — a service calling twenty others expands all twenty. No
 result cache, so a repeated query re-walks; immeasurable at corpus size and it
 will not be at real size.
+
+---
+
+# Phase 1 outcome — gate passed (2026-09-09)
+
+17 of 18 tasks done; **P1-T3 is wired and blocked upstream**
+([M8](../docs/measurements.md)).
+
+## What the engine does now
+
+```
+node src/cli.ts index                                    # all channels -> store
+node src/cli.ts flow --repo X --method POST --path /p    # what executes here
+node src/cli.ts impact <symbol>                          # what breaks
+node src/cli.ts security --repo X                        # coverage + anomaly
+node src/cli.ts context <symbol> --measure               # minimum edit context
+node src/cli.ts mcp                                      # all four over MCP
+```
+
+339 tests, `tsc --noEmit` clean, `foreign_key_check` and `integrity_check`
+clean, a second `index` with nothing changed does no work and says so.
+
+## The numbers
+
+| | |
+|---|---|
+| nodes / edges | 883 / 1,452 |
+| routes / chain rows | 47 / 157 |
+| inline security checks | 33 across three services |
+| CFG functions / blocks | 94 / 256 |
+| CFG exits | **7 error, 25 success** — against **3** `THROWS` edges total |
+| cross-service `REQUESTS` | 2, both hand-verified |
+| `context_pack` vs file dump | 4–26% signatures-only (M9) |
+
+## The gate
+
+R71's number is measured and recorded, and the finding is not the headline: the
+pack's value is the **structure**, not the source. With tier-1 source it ranges
+23–109%; without, 4–26%. On a single-file service the file dump is already
+close to minimal, so these are the corpus's worst case.
+
+## What Phase 1 does not establish
+
+1. **`scip-python` does not run here**, so `51-integration` contributes routes,
+   chain rows and tree-sitter findings and **no symbols, no call edges**. Six
+   chain entries report unjoined. OPEN-5 is open.
+2. **Attribution is coarse where the corpus is anonymous.** Every config read
+   and SQL literal lands on a *file* node, because they sit at module scope or
+   inside anonymous handlers and `ownerSymbol` refuses to guess a function.
+   Reported, and labelled `[file-scope]` everywhere it surfaces.
+3. **27 functions have no symbol to key a CFG on**, for the same reason.
+4. **No runtime channel.** `spans` has no producer until P2-T8, and every query
+   that would use it says "no producer", never "no evidence".
+5. **The corpus is not representative.** One to twelve small files per service,
+   zero plugins, zero `preHandler` hooks, no tenant scoping anywhere. The
+   anomaly query returning every write route is correct *and* is what plan §10
+   note 3 predicted.
+
+## The pattern worth carrying into Phase 2
+
+Every defect found in Phase 1 passed `tsc` and the suite, and every one was a
+**confident wrong answer** visible on the first real run:
+
+| | |
+|---|---|
+| D17 | the generated tsconfig indexed *nothing* on the one repo with directory includes |
+| D18 | a stale boot artifact failed as an unattributed SQL bind error |
+| D22 | the cross-service linker produced zero correct edges |
+| D24 | M7's module-scope defect returned; a path-key collision duplicated tree children; `npm:typescript` was the graph's largest external node |
+| D25 | `impact` reported `/health` as affected by `checkUserAuth`; a route counted but in no bucket; certain evidence relabelled inferred |
+| — | `if (authErr) return authErr;` produced a guard with no exit, and the corpus's dominant error shape classified as **success** |
+
+None of these were type errors. **Run it against real data before believing it.**
