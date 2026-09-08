@@ -566,3 +566,47 @@ Every defect found in Phase 1 passed `tsc` and the suite, and every one was a
 | — | `if (authErr) return authErr;` produced a guard with no exit, and the corpus's dominant error shape classified as **success** |
 
 None of these were type errors. **Run it against real data before believing it.**
+
+---
+
+# Phase 2 — visualisation and runtime
+
+| Task | Commit | State |
+|---|---|---|
+| P2-T1 UI shell (React Flow + elkjs) | — | not started |
+| P2-T2 ordered chain band | — | not started |
+| P2-T3 node inspector | — | not started |
+| P2-T4 confidence + security-provenance colouring | — | not started |
+| P2-T5 service grouping and filters | — | not started |
+| **P2-T6 Mermaid emitter** | `a5ac611` | **done** |
+| P2-T7 OTel instrumentation | — | blocked on OPEN-7 (external owner) |
+| P2-T8 OTLP receiver → `spans` | — | not started |
+| P2-T9 promotion + overlay | — | not started |
+| P2-T10 error backtracking | — | not started |
+| P2-T11 GitHub Action | — | not started |
+| P2-T12 execution-path rendering | — | not started |
+
+## P2-T6 — Mermaid emitter
+
+**Shipped.** `src/serializers/mermaid.ts`, behind `flow --mermaid`. Ships before
+the UI and independently of it: a diagram that renders in a PR comment is read
+by people who will never open a UI, and it costs a hundred lines rather than an
+app. Doc §Q.3 names building the UI first as the most common way this class of
+project dies.
+
+**The two axes stay separate.** Confidence is the *link* style
+(solid / dashed / thick-red); kind and outcome are the *node* class. R50's two
+security channels are filled green vs outlined-dashed green — not two shades of
+one colour.
+
+**Four defects from the first real render**, every one of them drawing something
+the data does not support: a self-loop where a `REQUESTS` edge already lands on
+the remote route node; duplicate arrows for two call sites to one callee;
+orphaned gap nodes floating attached to nothing; and raw SCIP symbols as labels,
+wider than the rest of the diagram together. Plus one arbitrary edge — several
+anonymous hooks join the same module symbol, so a module-scope gap attached to
+whichever chain step happened to be last. Those now attach to the route.
+
+**Does not do.** No `function_cfg` overlay yet — R78's green/red execution paths
+are P2-T12, and this emitter carries kind and confidence only. Node cap is 40,
+above which it truncates and says so; a genuinely large flow needs the UI.
