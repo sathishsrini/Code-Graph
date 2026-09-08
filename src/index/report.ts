@@ -40,6 +40,15 @@ export function renderIndexReport(reports: IndexReport[]): string {
         ? `   (${r.treesitter.fileScoped} attributed to the file — no enclosing symbol)`
         : ""),
     );
+    if (r.cfg.functions > 0 || r.cfg.unkeyed > 0) {
+      lines.push(
+        `  cfg        : ${r.cfg.functions} functions, ${r.cfg.blocks} blocks, ` +
+        `${r.cfg.errorExits} error exits, ${r.cfg.attributed} edges attributed` +
+        (r.cfg.unkeyed > 0
+          ? `   (${r.cfg.unkeyed} function(s) had no symbol to key on)`
+          : ""),
+      );
+    }
     if (r.boot) {
       const gap = r.boot.unjoined > 0 ? `   <-- ${r.boot.unjoined} unjoined` : "";
       lines.push(

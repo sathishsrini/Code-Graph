@@ -40,6 +40,8 @@ import { parseFile, grammarFor, type ParsedFile } from "../static/treesitter/par
 import { extract, type FileFindings } from "../static/treesitter/extract.ts";
 import { ingestFindings } from "../static/treesitter/ingest.ts";
 import { ingestInlineChecks } from "../static/inline-auth.ts";
+import { extractCfg } from "../static/cfg.ts";
+import { ingestCfgs } from "../static/cfg-ingest.ts";
 import { loadCheckKindRules, type CheckKindRules } from "../static/security-rules.ts";
 import { expandRoutes } from "../derive/routes.ts";
 import { readBootDump } from "../boot/dump.ts";
@@ -72,6 +74,8 @@ export interface IndexReport {
   calls: number;
   unresolvedCalls: number;
   treesitter: { throws: number; reads: number; writes: number; configs: number; fileScoped: number };
+  /** P1-T17/T18: per-function control flow and its edge attribution. */
+  cfg: { functions: number; blocks: number; errorExits: number; attributed: number; unkeyed: number };
   boot: {
     routes: number; chainEntries: number; unjoined: number; framework: number;
     handles: number; inline: number;
@@ -114,6 +118,7 @@ export async function indexRepo(options: IndexOptions): Promise<IndexReport> {
       purged: { edges: 0, unresolved: 0, chain: 0, files: 0 },
       symbols: 0, calls: 0, unresolvedCalls: 0,
       treesitter: { throws: 0, reads: 0, writes: 0, configs: 0, fileScoped: 0 },
+      cfg: { functions: 0, blocks: 0, errorExits: 0, attributed: 0, unkeyed: 0 },
       boot: null, missingArtifacts: [],
     };
   }
@@ -189,6 +194,29 @@ export async function indexRepo(options: IndexOptions): Promise<IndexReport> {
     treesitter.fileScoped += counts.fileScoped;
   }
 
+  // --- 4b. per-function control flow (P1-T17, P1-T18) ---------------------
+  // After the tree-sitter pass, because it reuses those function ranges; after
+  // the SCIP ingest, because a CFG is keyed by symbol and the symbols must
+  // exist; and after the edges, because R77 attributes THEM to its blocks.
+  const cfg = { functions: 0, blocks: 0, errorExits: 0, attributed: 0, unkeyed: 0 };
+  const cfgRules = loadCheckKindRules(rulesPath());
+  for (const [path, parsed] of parsedByPath) {
+    const findings = findingsByPath.get(path);
+    const fileId = fileIds.get(path);
+    if (!findings || fileId === undefined) continue;
+
+    const counts = ingestCfgs({
+      store, ranges, path, fileId, runId,
+      nodeIdOf: (symbol) => store.findNode("symbol", symbol) ?? null,
+    }, extractCfg(parsed, findings.functions, { errorBuilders: cfgRules.errorBuilders }));
+
+    cfg.functions += counts.functions;
+    cfg.blocks += counts.blocks;
+    cfg.errorExits += counts.errorExits;
+    cfg.attributed += counts.attributed;
+    cfg.unkeyed += counts.unkeyed;
+  }
+
   // --- 5. boot -------------------------------------------------------------
   let boot: IndexReport["boot"] = null;
   const bootPath = resolve(join(artifactDir, "boot", `${repo.name}.json`));
@@ -204,9 +232,7 @@ export async function indexRepo(options: IndexOptions): Promise<IndexReport> {
       // R26: inline security checks, from the same boot dump's handler lines.
       // The rule pack is reviewed configuration (P1-T9); loading it here, at
       // the one place that writes facts, keeps detection out of the extractors.
-      const rules: CheckKindRules = loadCheckKindRules(
-        resolve(join(dirname(fileURLToPath(import.meta.url)), "../../rules/check-kinds.yml")),
-      );
+      const rules: CheckKindRules = loadCheckKindRules(rulesPath());
       const inline = ingestInlineChecks(dump.routes, {
         store, writer, service: dump.service, repoId, fileIds, runId,
         rules, parsedByPath, findingsByPath,
@@ -227,7 +253,7 @@ export async function indexRepo(options: IndexOptions): Promise<IndexReport> {
   store.finishRun(runId);
   return {
     repo: repo.name, change, purged, skipped: false, reason: plan.reason,
-    symbols, calls, unresolvedCalls, treesitter, boot, missingArtifacts,
+    symbols, calls, unresolvedCalls, treesitter, cfg, boot, missingArtifacts,
   };
 }
 
@@ -309,6 +335,11 @@ export async function linkCrossServiceRepos(options: {
   }
 
   return report;
+}
+
+/** The reviewed rule pack, resolved from this module rather than the cwd. */
+function rulesPath(): string {
+  return resolve(join(dirname(fileURLToPath(import.meta.url)), "../../rules/check-kinds.yml"));
 }
 
 function langOf(path: string): string {

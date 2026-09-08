@@ -107,6 +107,21 @@ export interface ChainInput {
   runId: number;
 }
 
+export interface CfgBlockInput {
+  symbolNodeId: number;
+  blockIndex: number;
+  parentIndex: number | null;
+  kind: string;
+  conditionText?: string | null;
+  outcome?: string | null;
+  exitForm?: string | null;
+  errorName?: string | null;
+  startLine: number;
+  endLine: number;
+  fileId: number;
+  runId: number;
+}
+
 export interface UnresolvedInput {
   srcNodeId: number;
   kind: UnresolvedKind;
@@ -491,6 +506,49 @@ export class FactStore {
     const r = this.db.prepare(
       `DELETE FROM route_chain WHERE file_id = ? AND evidence_kind IN (${q})`,
     ).run(fileId, ...evidenceKinds);
+    return Number(r.changes);
+  }
+
+  // -- function_cfg (P1-T17, P1-T18) ----------------------------------------
+
+  /** Replace one function's CFG. R24's discipline: wholesale, never merged. */
+  replaceCfg(symbolNodeId: number, blocks: CfgBlockInput[]): void {
+    this.db.prepare("DELETE FROM function_cfg WHERE symbol_node_id = ?").run(symbolNodeId);
+    const insert = this.db.prepare(
+      `INSERT INTO function_cfg
+         (symbol_node_id, block_index, parent_index, kind, condition_text,
+          outcome, exit_form, error_name, start_line, end_line, file_id, run_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const b of blocks) {
+      insert.run(
+        b.symbolNodeId, b.blockIndex, b.parentIndex, b.kind, b.conditionText ?? null,
+        b.outcome ?? null, b.exitForm ?? null, b.errorName ?? null,
+        b.startLine, b.endLine, b.fileId, b.runId,
+      );
+    }
+  }
+
+  deleteCfgByProvenance(fileId: number): number {
+    const r = this.db.prepare("DELETE FROM function_cfg WHERE file_id = ?").run(fileId);
+    return Number(r.changes);
+  }
+
+  /**
+   * R77: attribute an edge's call site to its enclosing CFG block.
+   *
+   * Matched on (src, file, line) rather than an edge id, because the CFG is
+   * built after the edges and the caller does not hold their ids. Only edges
+   * the static channel placed at a line inside a parsed function get a value;
+   * boot and otel edges keep NULL, which is correct rather than missing.
+   */
+  attributeEdgeToBlock(
+    srcNodeId: number, fileId: number, line: number, blockIndex: number,
+  ): number {
+    const r = this.db.prepare(
+      `UPDATE edges SET cfg_block_index = ?
+        WHERE src_node_id = ? AND file_id = ? AND line = ?`,
+    ).run(blockIndex, srcNodeId, fileId, line);
     return Number(r.changes);
   }
 

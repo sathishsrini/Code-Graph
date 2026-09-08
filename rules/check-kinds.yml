@@ -18,3 +18,16 @@ check_kinds:
   ratelimit:
     - rateLimit
     - enforceRateLimit
+
+# Functions whose RETURN VALUE is an error (P1-T17, R76).
+#
+# The corpus throws nothing: failures are `return envelopeError({...})`. Whether
+# a given builder returns an error is a judgement about a codebase, so it is
+# declared here and reviewed, exactly like the check kinds above. A `throw` and
+# a 4xx status literal need no vocabulary — they are structural.
+error_builders:
+  return_error:
+    - envelopeError
+    - envelope_error
+    - errorEnvelope
+    - buildError

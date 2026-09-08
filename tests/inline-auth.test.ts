@@ -329,7 +329,10 @@ describe("ingestInlineChecks — rows, provenance, and the no-semgrep guard", ()
       // Un-review `checkUserAuth`: the same handler now yields no checks, and
       // the previous run's rows must not survive (the D5 direction — a revoked
       // rule cannot keep asserting coverage).
-      const without = { byName: new Map([...rules.byName].filter(([h]) => h !== "checkUserAuth")) };
+      const without = {
+        byName: new Map([...rules.byName].filter(([h]) => h !== "checkUserAuth")),
+        errorBuilders: rules.errorBuilders,
+      };
       assert.equal(ingestInlineChecks([bootRoute()], { ...opts(), rules: without }), 0);
       assert.equal(count().n, 0);
     } finally { store.close(); }
