@@ -610,3 +610,76 @@ whichever chain step happened to be last. Those now attach to the route.
 **Does not do.** No `function_cfg` overlay yet — R78's green/red execution paths
 are P2-T12, and this emitter carries kind and confidence only. Node cap is 40,
 above which it truncates and says so; a genuinely large flow needs the UI.
+
+---
+
+# Phase 2 outcome — all 12 tasks (2026-09-09)
+
+```
+node src/cli.ts otlp serve        # OTLP/HTTP receiver -> spans
+node src/cli.ts traffic           # drive the instrumented fixtures
+node src/cli.ts promote           # confirm inferred edges against traces
+node src/cli.ts errors  --repo X --method POST --path /p
+node src/cli.ts flow    --repo X --method POST --path /p --mermaid
+node src/cli.ts ui                # the viewer
+git diff main...HEAD | node src/cli.ts pr-impact
+```
+
+407 tests, `tsc --noEmit` clean.
+
+## Phase 2's acceptance criteria
+
+| # | Criterion | Result |
+|---|---|---|
+| 1 | Flow renders with swim-lanes; line styles reflect confidence | ✅ 20 nodes, 2 lanes, 24 edges on `POST /api/v1/po` |
+| 2 | Boot-verified vs inline-inferred visually distinguishable | ✅ filled vs outlined-dashed, and in the route picker before opening |
+| 3 | A real errored trace resolves to the deepest error span | ✅ `ECONNREFUSED` at depth 1, propagating to a 502 |
+| 4 | At least one `REQUESTS` edge promoted `inferred`→`observed` | ⚠️ **not demonstrated** — see below |
+| 5 | Three sections render; `UNKNOWN` appears whenever gaps intersect | ✅ |
+| 6 | Branches green/red/grey, separate from the confidence axis | ✅ 7 control-flow views on that route |
+
+**Criterion 4 is the honest gap.** Promotion is implemented and tested, and a
+cross-service `REQUESTS` edge needs a *client* span whose callee resolves — the
+router's outbound calls go to `41-kri-engine` and `51-integration`, and running
+those under the preload was not done here. What the corpus produced instead was
+**`ECONNREFUSED` to a service that was down**, which is a real trace and a real
+error path but not a promotion. Five routes were confirmed by template match;
+zero `REQUESTS` edges were promoted.
+
+## The finding worth carrying
+
+[M10](../docs/measurements.md): **`http.route` does not come free.** R52 says it
+does and R54 makes it the primary join key; 19 spans arrived with it NULL on
+every one. It is set by *framework* instrumentation, not HTTP instrumentation —
+only the router knows which template a concrete path matched.
+
+Two queries joined on it and both silently found nothing. The worse one:
+`errors --path /api/v1/auth/login` reported *"no errored trace recorded"* for a
+route that had just returned three 502s.
+
+## Two independent passes, agreeing
+
+The strongest thing the corpus produced:
+
+```
+STATIC   server.js:161  proxyAuth  return_error  KRI40-DOWNSTREAM-TIMEOUT-001  when: e
+OBSERVED trace b01dac3b…  ORIGIN depth 1  ECONNREFUSED  ->  502
+```
+
+The static surface predicted `proxyAuth` returns a downstream-timeout error
+from its `catch`; three real traces show exactly that. Neither pass read the
+other's result. That is R41 working rather than a coincidence — and it is the
+first time in this project that the two channels have confirmed each other
+rather than covering for each other.
+
+## What Phase 2 does not establish
+
+1. **No `code.*` spans**, so the span→symbol join (R54's second key) is wired
+   and unexercised — 0 symbols matched. Manual spans per function are required
+   and `preload.mjs` deliberately does not add them wholesale, because wrapping
+   every function changes the shape of the thing being measured.
+2. **One service instrumented**, so nothing cross-service was observed.
+3. **"Possibly dead" reports 1,260 edges** against 19 spans. Correct and
+   useless in equal measure, which is why it prints the span count beside it.
+4. **The UI is untested by a human.** Its payload is asserted; its usability is
+   not, and no amount of test coverage substitutes for someone opening it.
