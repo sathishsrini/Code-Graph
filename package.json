@@ -25,6 +25,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@sourcegraph/scip-python": "^0.6.6",
     "@types/node": "^22.0.0",
+    "elkjs": "^0.9.3",
     "fastify": "^4.29.1",
     "fastify-overview": "^3.9.0",
     "tree-sitter-wasms": "^0.1.13",

@@ -36,6 +36,7 @@ import { promote, possiblyDeadEdges } from "./runtime/promote.ts";
 import { errorPaths } from "./query/errors.ts";
 import { renderErrorReport } from "./query/errors-render.ts";
 import { analysePr, renderPrComment } from "./ci/pr-impact.ts";
+import { startUi } from "./ui/server.ts";
 import {
   runScipTypescript, runScipPython, documentAllowed,
 } from "./static/scip/runner.ts";
@@ -70,6 +71,7 @@ COMMANDS
   promote             Confirm inferred edges against observed traces (P2-T9)
   errors              Observed / static / correlated failure analysis (P2-T10)
   pr-impact           Read a unified diff on stdin, emit an impact comment (P2-T11)
+  ui                  Serve the graph viewer on localhost (P2-T1..T5, T12)
   help                Show this message
 
 OPTIONS
@@ -277,6 +279,9 @@ async function main(argv: string[]): Promise<number> {
 
     case "pr-impact":
       return await cmdPrImpact(options);
+
+    case "ui":
+      return await cmdUi(options);
 
     case "mcp":
       // Never returns: the transport owns the process until stdin closes.
@@ -770,6 +775,31 @@ function cmdContext(options: Options, seed: string): number {
   } finally {
     store.close();
   }
+}
+
+/**
+ * ui — the graph viewer (P2-T1..T5, P2-T12).
+ *
+ * Last on purpose. Doc §Q.3 names building the UI first as the most common way
+ * this class of project dies: a beautiful renderer over a graph nobody trusts.
+ * Everything it draws was already answerable from the CLI before it existed.
+ */
+async function cmdUi(options: Options): Promise<number> {
+  const store = new FactStore(options.db);
+  const ui = await startUi(store, { port: options.port ?? 7777 });
+  process.stdout.write(
+    `viewer   : http://127.0.0.1:${ui.port}` + BREAK +
+    `database : ${store.path}` + BREAK +
+    `routes   : ${store.countRows("routes")}` + BREAK +
+    `Ctrl-C to stop.` + BREAK,
+  );
+  await new Promise<void>((resolveDone) => {
+    const stop = () => { void ui.close().then(resolveDone); };
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+  });
+  store.close();
+  return 0;
 }
 
 /**

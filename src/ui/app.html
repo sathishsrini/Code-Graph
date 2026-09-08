@@ -1,0 +1,458 @@
+<!doctype html>
+<!--
+  code-intel viewer — tasks P2-T1 … P2-T5, P2-T12 (R45, R49, R50, R78)
+
+  One file, no bundler, no CDN. elkjs does the layered layout; the rendering is
+  plain SVG, which is why this needs no build step.
+
+  THE ONE RULE THIS UI EXISTS TO OBEY: two independent visual axes.
+
+    line style  =  confidence   how sure we are the edge EXISTS
+    colour      =  outcome      whether that path SUCCEEDS or ERRORS
+
+  A dashed green edge is "we are unsure this call happens, on a path we are
+  sure succeeds". A solid red one is "this call definitely happens, on a path
+  that errors". Merging them into one "status" is the easy mistake and R78
+  forbids it — the legend states the difference and is always on screen.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>code-intel</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3;
+    --dim: #8b949e; --certain: #58a6ff; --inferred: #d29922; --observed: #3fb950;
+    --unresolved: #f85149; --success: #3fb950; --error: #f85149; --unknown: #8b949e;
+    --route: #1f6feb; --check-boot: #238636; --check-inline: #2ea043;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    display: grid; grid-template-columns: 260px 1fr 340px; height: 100vh;
+  }
+  aside, #inspector {
+    background: var(--panel); border-right: 1px solid var(--border);
+    overflow-y: auto; padding: 12px;
+  }
+  #inspector { border-right: none; border-left: 1px solid var(--border); }
+  main { position: relative; overflow: hidden; }
+  h1 { font-size: 13px; margin: 0 0 10px; letter-spacing: .04em; }
+  h2 { font-size: 11px; color: var(--dim); margin: 16px 0 6px;
+       text-transform: uppercase; letter-spacing: .08em; }
+  .route { padding: 5px 7px; border-radius: 4px; cursor: pointer;
+           border: 1px solid transparent; font-size: 12px; }
+  .route:hover { background: #21262d; }
+  .route[aria-current="true"] { border-color: var(--certain); background: #21262d; }
+  .route .m { color: var(--dim); }
+  .badge { display: inline-block; font-size: 9px; padding: 0 4px; border-radius: 6px;
+           margin-left: 4px; vertical-align: middle; }
+  /* R50: filled = the framework reported it. Outlined = a parser guessed it. */
+  .badge.boot { background: var(--check-boot); color: #fff; }
+  .badge.inline { border: 1px dashed var(--check-inline); color: var(--check-inline); }
+  svg { width: 100%; height: 100%; display: block; cursor: grab; }
+  svg:active { cursor: grabbing; }
+  .lane { fill: #ffffff06; stroke: var(--border); stroke-dasharray: 4 4; }
+  .lane-label { fill: var(--dim); font-size: 11px; }
+  .n rect, .n polygon, .n ellipse { stroke-width: 1.5; }
+  .n text { font-size: 11px; fill: var(--text); pointer-events: none; }
+  .n { cursor: pointer; }
+  .n.sel rect, .n.sel polygon, .n.sel ellipse { stroke-width: 3; }
+  .e { fill: none; stroke-width: 1.6; }
+  .e.certain { stroke: var(--certain); }
+  .e.observed { stroke: var(--observed); stroke-width: 3; }
+  .e.inferred { stroke: var(--inferred); stroke-dasharray: 6 4; }
+  .e.unresolved { stroke: var(--unresolved); stroke-dasharray: 2 3; }
+  #legend { position: absolute; right: 10px; bottom: 10px; background: var(--panel);
+            border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+            font-size: 10px; line-height: 1.7; max-width: 300px; }
+  #legend b { color: var(--text); font-weight: 600; }
+  #legend .row { color: var(--dim); }
+  #legend .sep { border-top: 1px solid var(--border); margin: 6px 0; }
+  .k { color: var(--dim); }
+  .cfg { margin: 6px 0; padding-left: 10px; border-left: 2px solid var(--border); }
+  .cfg.error_exit { border-color: var(--error); }
+  .cfg.success { border-color: var(--success); }
+  .cfg.unknown { border-color: var(--unknown); }
+  .warn { color: var(--inferred); }
+  .gap { color: var(--unresolved); }
+  button, select, input {
+    background: #21262d; color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: 3px 6px; font: inherit; font-size: 11px;
+  }
+  label { display: block; margin: 4px 0; color: var(--dim); font-size: 11px; }
+  #empty { position: absolute; inset: 0; display: grid; place-items: center;
+           color: var(--dim); text-align: center; padding: 20px; }
+</style>
+</head>
+<body>
+<aside>
+  <h1>code-intel</h1>
+  <input id="filter" placeholder="filter routes…" style="width:100%">
+  <h2>Routes</h2>
+  <div id="routes"></div>
+</aside>
+
+<main>
+  <svg id="canvas"><g id="viewport"></g></svg>
+  <div id="empty">pick a route</div>
+  <div id="legend"></div>
+</main>
+
+<aside id="inspector"><p class="k">Select a node.</p></aside>
+
+<script src="/elk.js"></script>
+<script>
+const elk = new ELK();
+const $ = (id) => document.getElementById(id);
+let payload = null, selected = null, view = { x: 40, y: 40, k: 0.9 };
+
+// ---------------------------------------------------------------------------
+// Node shapes carry KIND; colour carries outcome. Two channels, never merged.
+// ---------------------------------------------------------------------------
+const SHAPE = {
+  route:     { w: 210, h: 40, fill: "#1f6feb22", stroke: "var(--route)" },
+  symbol:    { w: 180, h: 34, fill: "#ffffff08", stroke: "#8b949e" },
+  check:     { w: 180, h: 34, fill: "transparent", stroke: "var(--check-inline)" },
+  chain:     { w: 180, h: 34, fill: "#ffffff04", stroke: "#484f58" },
+  external:  { w: 170, h: 30, fill: "#8b949e18", stroke: "#484f58" },
+  datastore: { w: 170, h: 34, fill: "#9a670022", stroke: "#9a6700" },
+  config:    { w: 170, h: 30, fill: "#9a670012", stroke: "#9a6700" },
+  file:      { w: 180, h: 30, fill: "#ffffff04", stroke: "#484f58" },
+};
+const shapeOf = (kind) => SHAPE[kind] ?? SHAPE.symbol;
+
+async function boot() {
+  const routes = await (await fetch("/api/routes")).json();
+  renderRoutes(routes);
+  $("filter").addEventListener("input", () => renderRoutes(routes));
+  renderLegend();
+}
+
+function renderRoutes(routes) {
+  const q = $("filter").value.toLowerCase();
+  const list = routes.filter((r) =>
+    `${r.service} ${r.method} ${r.url}`.toLowerCase().includes(q));
+  $("routes").innerHTML = "";
+  let service = null;
+  for (const r of list) {
+    if (r.service !== service) {
+      service = r.service;
+      const h = document.createElement("h2");
+      h.textContent = service;
+      $("routes").append(h);
+    }
+    const el = document.createElement("div");
+    el.className = "route";
+    el.dataset.key = `${r.service}|${r.method}|${r.url}`;
+    // The picker already distinguishes the two channels, so the difference is
+    // visible before anything is opened.
+    el.innerHTML =
+      `<span class="m">${r.method}</span> ${escapeHtml(r.url)}` +
+      r.checks.map((c) => `<span class="badge ${c.channel}">${c.kind}</span>`).join("");
+    el.onclick = () => load(r);
+    $("routes").append(el);
+  }
+}
+
+async function load(route) {
+  for (const el of document.querySelectorAll(".route")) {
+    el.setAttribute("aria-current",
+      String(el.dataset.key === `${route.service}|${route.method}|${route.url}`));
+  }
+  const url = `/api/graph?service=${encodeURIComponent(route.service)}` +
+    `&method=${encodeURIComponent(route.method)}&path=${encodeURIComponent(route.url)}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    $("empty").textContent = (await res.json()).error;
+    $("empty").style.display = "grid";
+    return;
+  }
+  payload = await res.json();
+  $("empty").style.display = "none";
+  await draw();
+  renderLegend();
+  inspectRoute();
+}
+
+// ---------------------------------------------------------------------------
+// Layout: elkjs `layered`, with a compound node per service (P2-T5 swim-lanes)
+// ---------------------------------------------------------------------------
+async function draw() {
+  const byService = new Map();
+  for (const n of payload.nodes) {
+    const key = n.service ?? "(external)";
+    if (!byService.has(key)) byService.set(key, []);
+    byService.get(key).push(n);
+  }
+
+  const graph = {
+    id: "root",
+    layoutOptions: {
+      "elk.algorithm": "layered",
+      "elk.direction": "RIGHT",
+      "elk.spacing.nodeNode": "26",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "70",
+      "elk.hierarchyHandling": "INCLUDE_CHILDREN",
+    },
+    children: [...byService.entries()].map(([service, nodes]) => ({
+      id: `lane:${service}`,
+      layoutOptions: { "elk.padding": "[top=34,left=16,bottom=16,right=16]" },
+      children: nodes.map((n) => {
+        const s = shapeOf(n.kind);
+        return { id: n.id, width: s.w, height: s.h };
+      }),
+    })),
+    edges: payload.edges.map((e) => ({
+      id: e.id, sources: [e.source], targets: [e.target],
+    })),
+  };
+
+  const laid = await elk.layout(graph);
+  const vp = $("viewport");
+  vp.innerHTML = "";
+
+  const positions = new Map();
+  for (const lane of laid.children ?? []) {
+    const g = svg("g");
+    g.append(rect(lane.x, lane.y, lane.width, lane.height, "lane"));
+    const label = svg("text", {
+      x: lane.x + 10, y: lane.y + 20, class: "lane-label",
+    });
+    label.textContent = lane.id.replace(/^lane:/, "");
+    g.append(label);
+    vp.append(g);
+    for (const child of lane.children ?? []) {
+      positions.set(child.id, {
+        x: lane.x + child.x, y: lane.y + child.y,
+        w: child.width, h: child.height,
+      });
+    }
+  }
+
+  for (const e of payload.edges) {
+    const a = positions.get(e.source), b = positions.get(e.target);
+    if (!a || !b) continue;
+    const path = svg("path", {
+      class: `e ${e.confidence}`,
+      d: `M ${a.x + a.w} ${a.y + a.h / 2} C ${a.x + a.w + 40} ${a.y + a.h / 2},` +
+         ` ${b.x - 40} ${b.y + b.h / 2}, ${b.x} ${b.y + b.h / 2}`,
+      "marker-end": "url(#arrow)",
+    });
+    const title = svg("title");
+    // Both axes in the tooltip, named, so hovering teaches the distinction.
+    title.textContent =
+      `${e.type}\nedge confidence: ${e.confidence}\npath confidence: ${e.pathConfidence}`;
+    path.append(title);
+    vp.append(path);
+  }
+
+  for (const n of payload.nodes) {
+    const p = positions.get(n.id);
+    if (!p) continue;
+    const s = shapeOf(n.kind);
+    const g = svg("g", { class: "n", "data-id": n.id });
+    const box = rect(p.x, p.y, p.w, p.h, "");
+    box.setAttribute("rx", n.kind === "route" ? "18" : "5");
+    box.setAttribute("fill", s.fill);
+    box.setAttribute("stroke", strokeFor(n, s.stroke));
+    if (n.chain?.channel === "inline") box.setAttribute("stroke-dasharray", "5 3");
+    g.append(box);
+
+    const t = svg("text", { x: p.x + 10, y: p.y + p.h / 2 + 4 });
+    t.textContent = clip(n.label, Math.floor((p.w - 20) / 6.6));
+    g.append(t);
+
+    if (n.chain?.checkKind) {
+      const badge = svg("text", {
+        x: p.x + p.w - 8, y: p.y + 12, "text-anchor": "end",
+        fill: n.chain.channel === "boot" ? "var(--check-boot)" : "var(--check-inline)",
+        "font-size": "9",
+      });
+      badge.textContent = `${n.chain.checkKind}·${n.chain.channel}`;
+      g.append(badge);
+    }
+
+    g.onclick = () => inspect(n);
+    vp.append(g);
+  }
+
+  ensureDefs();
+  applyView();
+}
+
+/**
+ * Node stroke = OUTCOME where we know it, kind otherwise.
+ *
+ * Never confidence — that is the edges' axis. A node coloured by confidence
+ * and an edge styled by it say the same thing twice and leave outcome
+ * unrepresented, which is exactly the conflation R78 forbids.
+ */
+function strokeFor(n, fallback) {
+  const cfg = payload.cfg[n.key];
+  if (!cfg) return fallback;
+  const exits = cfg.blocks.filter((b) => b.kind === "exit");
+  if (exits.length === 0) return fallback;
+  if (exits.every((e) => e.outcome === "error_exit")) return "var(--error)";
+  if (exits.some((e) => e.outcome === "error_exit")) return "var(--inferred)";
+  if (exits.every((e) => e.outcome === "success")) return "var(--success)";
+  return "var(--unknown)";
+}
+
+// ---------------------------------------------------------------------------
+// Inspector (P2-T3) and the branch view (P2-T12)
+// ---------------------------------------------------------------------------
+function inspect(n) {
+  selected = n.id;
+  for (const el of document.querySelectorAll(".n")) {
+    el.classList.toggle("sel", el.dataset.id === n.id);
+  }
+  const out = [`<h1>${escapeHtml(n.label)}</h1>`,
+    `<p class="k">${escapeHtml(n.kind)}</p>`];
+  if (n.file) out.push(`<p class="k">${escapeHtml(n.file)}${n.line ? `:${n.line}` : ""}</p>`);
+  out.push(`<h2>key</h2><p class="k" style="word-break:break-all">${escapeHtml(n.key)}</p>`);
+
+  if (n.chain) {
+    out.push("<h2>chain</h2>");
+    out.push(`<p>position ${n.chain.position} · ${escapeHtml(n.chain.phase)}</p>`);
+    if (n.chain.checkKind) {
+      out.push(
+        `<p><span class="badge ${n.chain.channel}">${n.chain.checkKind}</span> ` +
+        `${n.chain.confidence} · ${n.chain.channel === "boot"
+          ? "the framework reported this hook"
+          : "a parser found this in the handler body"}</p>`,
+      );
+    }
+    if (n.chain.detail) out.push(`<p class="k">${escapeHtml(n.chain.detail)}</p>`);
+  }
+
+  const cfg = payload.cfg[n.key];
+  if (cfg) {
+    // P2-T12: green success, red error exit, grey undetermined. A SEPARATE
+    // axis from the edge styling, and the legend says so.
+    out.push("<h2>execution paths</h2>");
+    for (const b of cfg.blocks) {
+      if (b.kind === "root") continue;
+      const outcome = b.outcome ?? "";
+      const label = b.kind === "exit"
+        ? `${b.exitForm ?? "exit"}${b.errorName ? ` · ${b.errorName}` : ""}`
+        : `${b.kind}${b.condition ? ` (${clip(b.condition, 40)})` : ""}`;
+      out.push(
+        `<div class="cfg ${outcome}">L${b.startLine} ${escapeHtml(label)}` +
+        (outcome ? ` <span class="k">${outcome}</span>` : "") + "</div>",
+      );
+    }
+  }
+
+  const incoming = payload.edges.filter((e) => e.target === n.id);
+  const outgoing = payload.edges.filter((e) => e.source === n.id);
+  out.push(`<h2>edges</h2>`);
+  for (const [dir, list] of [["in", incoming], ["out", outgoing]]) {
+    for (const e of list) {
+      const other = dir === "in" ? e.source : e.target;
+      const node = payload.nodes.find((x) => x.id === other);
+      out.push(
+        `<p class="k">${dir === "in" ? "←" : "→"} ${escapeHtml(node?.label ?? other)} ` +
+        `<span style="color:var(--${e.confidence})">${e.type} ${e.confidence}</span></p>`,
+      );
+    }
+  }
+  $("inspector").innerHTML = out.join("");
+}
+
+function inspectRoute() {
+  const out = [
+    `<h1>${escapeHtml(payload.route.method)} ${escapeHtml(payload.route.url)}</h1>`,
+    `<p class="k">${escapeHtml(payload.route.service)}</p>`,
+  ];
+  if (payload.services.length > 1) {
+    out.push("<h2>services on this flow</h2>");
+    out.push(`<p>${payload.services.map(escapeHtml).join(" → ")}</p>`);
+  }
+  // R61 has a UI form too. Gaps get a panel, not an absence: a graph that
+  // silently omits what it could not resolve looks complete.
+  out.push(`<h2>unknown — ${payload.unknowns.length}</h2>`);
+  if (payload.unknowns.length === 0) {
+    out.push('<p class="k">no unresolved call sites on this path.</p>');
+  }
+  for (const u of payload.unknowns) {
+    out.push(
+      `<p class="gap">${escapeHtml(u.where)}<br>` +
+      `<span class="k">${escapeHtml(u.symbol)} → ${escapeHtml(u.target ?? "?")}<br>` +
+      `${escapeHtml(u.reason)}</span></p>`,
+    );
+  }
+  $("inspector").innerHTML = out.join("");
+}
+
+function renderLegend() {
+  const l = payload?.legend;
+  if (!l) { $("legend").innerHTML = ""; return; }
+  const block = (title, obj) =>
+    `<b>${escapeHtml(obj.axis)}</b>` +
+    Object.entries(obj).filter(([k]) => k !== "axis")
+      .map(([k, v]) => `<div class="row">${escapeHtml(v)}</div>`).join("");
+  $("legend").innerHTML =
+    block("confidence", l.confidence) + '<div class="sep"></div>' +
+    block("outcome", l.outcome) + '<div class="sep"></div>' +
+    block("security", l.security);
+}
+
+// ---------------------------------------------------------------------------
+// Pan and zoom. ~25 lines, which is why this needs no graph framework.
+// ---------------------------------------------------------------------------
+function applyView() {
+  $("viewport").setAttribute(
+    "transform", `translate(${view.x},${view.y}) scale(${view.k})`);
+}
+(() => {
+  const svgEl = $("canvas");
+  let dragging = false, lastX = 0, lastY = 0;
+  svgEl.addEventListener("mousedown", (e) => {
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+  });
+  addEventListener("mouseup", () => { dragging = false; });
+  addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    view.x += e.clientX - lastX; view.y += e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
+    applyView();
+  });
+  svgEl.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    view.k = Math.min(3, Math.max(0.15, view.k * factor));
+    applyView();
+  }, { passive: false });
+})();
+
+// ---------------------------------------------------------------------------
+function svg(tag, attrs = {}) {
+  const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+  return el;
+}
+function rect(x, y, w, h, cls) {
+  return svg("rect", { x, y, width: w, height: h, class: cls, rx: 6 });
+}
+function ensureDefs() {
+  if ($("canvas").querySelector("defs")) return;
+  const defs = svg("defs");
+  const marker = svg("marker", {
+    id: "arrow", viewBox: "0 0 10 10", refX: "9", refY: "5",
+    markerWidth: "6", markerHeight: "6", orient: "auto-start-reverse",
+  });
+  marker.append(svg("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "#8b949e" }));
+  defs.append(marker);
+  $("canvas").prepend(defs);
+}
+const clip = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+boot();
+</script>
+</body>
+</html>

@@ -640,3 +640,53 @@ They now consult the seed's owning file as well, and each shared node records
 as the symbol's own dependencies would overstate; reporting nothing hides a real
 coupling. `impact 51-integration/main.py` now answers OPEN-9's question directly:
 eight config nodes shared with `41-kri-engine`, and `postgres://?/mail_events`.
+
+---
+
+## D26 — the UI is elkjs + SVG, not React Flow · applied · P2-T1…T5, P2-T12
+
+**Plan says:** P2-T1 — *"UI shell: React Flow + elkjs (`layered`)"*, and R49
+names React Flow directly.
+
+**Change:** elkjs does the layered layout, as planned. The rendering is plain
+SVG in one HTML file, with ~25 lines of pan/zoom, instead of React Flow.
+
+**Why:** React Flow needs a bundler, and this project has none by decision.
+`package.json` has no build script and Node executes the `.ts` sources
+directly — the stack was chosen twice over for that property (`node:sqlite`
+over `better-sqlite3`, WASM tree-sitter over the native binding). Adding
+webpack so a graph can be drawn would make `npm start` a two-stage thing for
+everyone, permanently, and it is the one dependency that would spread: a
+bundler in the repo eventually owns the CLI too.
+
+elkjs is served from `node_modules`, not a CDN, so the viewer works offline and
+pins the version the tests ran against.
+
+**Cost, stated plainly:** no minimap, no drag-to-reposition, no edge routing
+around nodes, and no node virtualisation — a flow of several hundred nodes will
+render slowly. React Flow gives all of that free. If a flow that size becomes
+routine, this is the right thing to revisit, and the payload
+(`src/serializers/graph-json.ts`) is deliberately renderer-agnostic so that
+swap costs nothing outside the view layer.
+
+**What is unchanged:** R49's acceptance criterion — *"renders an endpoint flow
+with elkjs layout"* — and R50's, R78's. The two visual axes are two independent
+fields in the payload, the legend ships with the data, and service swim-lanes
+are elkjs compound nodes.
+
+---
+
+## D27 — the branch view attached to chain steps only · corrected · P2-T12
+
+Found by a test rather than by running it, which is rarer here than the
+reverse.
+
+`attachCfg` ran for chain steps and not for symbols reached in the call tree,
+so **1 of 7** functions on `POST /api/v1/po` carried control flow. Clicking any
+callee — `checkUserAuth`, `envelopeError`, `forward` — showed no execution
+paths at all, which reads as "this function has no branches" rather than "we
+did not look here".
+
+Now attached for every `symbol` node the viewer can select. 1 → 7 on that
+route, and `proxyToEngine` shows its two error exits and its success
+continuation, which is the picture R78 asks for.
