@@ -31,6 +31,8 @@ import { renderSecurity, renderRouteSecurity } from "./query/security-render.ts"
 import { contextPack, packToToon, measureTokenDelta } from "./query/context-pack.ts";
 import { startMcpServer } from "./mcp/server.ts";
 import { flowToMermaid } from "./serializers/mermaid.ts";
+import { startReceiver } from "./runtime/receiver.ts";
+import { promote, possiblyDeadEdges } from "./runtime/promote.ts";
 import {
   runScipTypescript, runScipPython, documentAllowed,
 } from "./static/scip/runner.ts";
@@ -61,6 +63,8 @@ COMMANDS
   security            Coverage matrix + the writes-without-tenant anomaly (P1-T14)
   context <symbol>    Minimum context to edit this function, budgeted (P1-T15)
   mcp                 Serve the four queries over MCP on stdio (P1-T16)
+  otlp serve          Receive OTLP/HTTP traces into the spans table (P2-T8)
+  promote             Confirm inferred edges against observed traces (P2-T9)
   help                Show this message
 
 OPTIONS
@@ -82,6 +86,9 @@ OPTIONS
   --budget <n>        context: token budget                      (default 4000)
   --no-source         context: omit tier-1 raw source
   --measure           context: also report the R71 token delta vs dumping files
+  --port <n>          otlp serve: listen port                    (default 4318)
+  --sample-rate <r>   otlp serve: fraction of non-errored traces kept (default 0.01)
+  --dead-after <d>    promote: days without confirmation before "possibly dead"
   --anomaly <kind>    security: check kind whose absence over a write is flagged
                       (default: tenant)
   --force             index: re-run every derivation, ignoring the changed set
@@ -116,6 +123,9 @@ interface Options {
   budget: number | undefined;
   noSource: boolean;
   measure: boolean;
+  port: number | undefined;
+  sampleRate: number | undefined;
+  deadAfter: number | undefined;
   checkPaths: boolean;
   json: boolean;
 }
@@ -148,6 +158,9 @@ async function main(argv: string[]): Promise<number> {
         budget: { type: "string" },
         "no-source": { type: "boolean", default: false },
         measure: { type: "boolean", default: false },
+        port: { type: "string" },
+        "sample-rate": { type: "string" },
+        "dead-after": { type: "string" },
         // node:util parseArgs has no "--no-x" negation, so this is stated
         // positively. The default remains "do check paths".
         "skip-path-check": { type: "boolean", default: false },
@@ -183,6 +196,9 @@ async function main(argv: string[]): Promise<number> {
     budget: values.budget ? Number(values.budget) : undefined,
     noSource: values["no-source"] === true,
     measure: values.measure === true,
+    port: values.port ? Number(values.port) : undefined,
+    sampleRate: values["sample-rate"] ? Number(values["sample-rate"]) : undefined,
+    deadAfter: values["dead-after"] ? Number(values["dead-after"]) : undefined,
     checkPaths: values["skip-path-check"] !== true,
     json: values.json === true,
   };
@@ -240,6 +256,16 @@ async function main(argv: string[]): Promise<number> {
 
     case "context":
       return cmdContext(options, positionals[1] ?? "");
+
+    case "otlp":
+      if (sub !== "serve") {
+        process.stderr.write(`unknown subcommand: otlp ${sub}` + BREAK + BREAK + USAGE);
+        return 2;
+      }
+      return await cmdOtlpServe(options);
+
+    case "promote":
+      return cmdPromote(options);
 
     case "mcp":
       // Never returns: the transport owns the process until stdin closes.
@@ -730,6 +756,112 @@ function cmdContext(options: Options, seed: string): number {
       return 1;
     }
     throw e;
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * otlp serve — the runtime channel's ingress (P2-T8).
+ *
+ * Runs until interrupted. On shutdown it decides every buffered trace rather
+ * than dropping it: a trace whose root had not yet arrived is exactly the kind
+ * most likely to be the errored one.
+ */
+async function cmdOtlpServe(options: Options): Promise<number> {
+  const store = new FactStore(options.db);
+  const receiver = await startReceiver(store, {
+    port: options.port,
+    successRate: options.sampleRate,
+  });
+
+  process.stdout.write(
+    `otlp receiver: http://127.0.0.1:${receiver.port}/v1/traces` + BREAK +
+    `sampling     : 100% of errored traces, ` +
+    `${((options.sampleRate ?? 0.01) * 100).toFixed(1)}% of the rest (R53)` + BREAK +
+    `database     : ${store.path}` + BREAK +
+    `point an exporter at it with OTEL_EXPORTER_OTLP_PROTOCOL=http/json` + BREAK +
+    `Ctrl-C to flush buffered traces and stop.` + BREAK,
+  );
+
+  await new Promise<void>((resolveDone) => {
+    const stop = () => {
+      void receiver.close().then(({ flushed }) => {
+        const s = receiver.stats();
+        process.stdout.write(
+          BREAK + `received ${s.received} spans, kept ${s.kept}` +
+          `${flushed > 0 ? ` (${flushed} flushed on shutdown)` : ""}` + BREAK,
+        );
+        resolveDone();
+      });
+    };
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+  });
+
+  store.close();
+  return 0;
+}
+
+/**
+ * promote — confirm inferred edges against what traces observed (P2-T9).
+ *
+ * Never deletes. R56 is absolute: runtime upgrades or adds, and an edge no
+ * trace covered is reported as "possibly dead", which is a weaker and truer
+ * claim than "dead".
+ */
+function cmdPromote(options: Options): number {
+  const store = new FactStore(options.db);
+  try {
+    const ports = new Map<number, string>();
+    try {
+      for (const repo of loadConfig(options.config, { checkPaths: false }).repos) {
+        if (repo.port !== null) ports.set(repo.port, repo.serviceName);
+      }
+    } catch {
+      // No config is not fatal here: address-names-the-service still resolves,
+      // and the loopback-plus-port path simply finds nothing.
+    }
+
+    const deadAfterDays = options.deadAfter ?? 30;
+    const report = promote(store, { deadAfterDays, servicePorts: ports });
+
+    if (options.json) {
+      process.stdout.write(JSON.stringify(report, null, 2) + BREAK);
+      return 0;
+    }
+
+    const spans = store.countRows("spans");
+    process.stdout.write(
+      `spans in store : ${spans}` + BREAK + BREAK +
+      `MATCHED  (R54 join keys)` + BREAK +
+      `  routes       : ${report.matchedRoutes}` + BREAK +
+      `  symbols      : ${report.matchedSymbols}` + BREAK +
+      `  datastores   : ${report.matchedDatastores}` + BREAK +
+      `  unmatched    : ${report.unmatched}   ` +
+      `(join keys that resolved to nothing — a gap, not a zero)` + BREAK + BREAK +
+      `PROMOTED  (R56 — runtime never deletes a static edge)` + BREAK +
+      `  inferred -> observed : ${report.promoted}` + BREAK +
+      `  added as observed    : ${report.added}` + BREAK + BREAK +
+      `POSSIBLY DEAD  (R57 — ${deadAfterDays}d without confirmation)` + BREAK +
+      `  ${report.possiblyDead} static edge(s)` + BREAK,
+    );
+
+    if (report.possiblyDead > 0) {
+      for (const e of possiblyDeadEdges(store, deadAfterDays, 10)) {
+        process.stdout.write(
+          `    ${e.type.padEnd(15)} ${displayNameOf(e.src)} -> ${displayNameOf(e.dst)}` +
+          `   ${e.lastObserved ?? "never observed"}` + BREAK,
+        );
+      }
+      process.stdout.write(
+        BREAK +
+        `  Read as 'no trace covered this', NEVER as 'this is dead'. With ` +
+        `${spans} span(s)` + BREAK +
+        `  in the store, absence of evidence here is mostly absence of traffic.` + BREAK,
+      );
+    }
+    return 0;
   } finally {
     store.close();
   }

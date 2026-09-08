@@ -103,17 +103,21 @@ describe("phase 1 schema", () => {
     } finally { store.close(); }
   });
 
-  test("spans and summaries are ABSENT until their producers ship (R72)", () => {
-    // Not an oversight. `spans` arrives with the OTLP receiver (P2-T8) and
-    // `summaries` with the LLM layer (P3-T2). A table that is structurally
-    // guaranteed to be empty is what 470 lines of dead DDL looked like the
-    // last two times, and a query joining one answers "no evidence" when the
-    // truth is "no producer".
+  test("a table ships only once it has a producer (R72)", () => {
+    // `spans` arrived with the OTLP receiver in P2-T8 and is present now;
+    // `summaries` waits for the LLM layer (P3-T2). A table that is
+    // structurally guaranteed to be empty is what 470 lines of dead DDL looked
+    // like the last two times, and a query joining one answers "no evidence"
+    // when the truth is "no producer".
+    //
+    // This assertion moves as producers land. It failing because a table
+    // appeared is the signal working, not the test being stale — check the
+    // producer shipped in the same commit.
     const store = new FactStore(join(dir, "absent.db"));
     try {
       const names = tableNames(store);
-      assert.ok(!names.has("spans"), "spans has no Phase 1 producer");
-      assert.ok(!names.has("summaries"), "summaries has no Phase 1 producer");
+      assert.ok(names.has("spans"), "spans has a producer: src/runtime/otlp.ts");
+      assert.ok(!names.has("summaries"), "summaries has no producer until P3-T2");
     } finally { store.close(); }
   });
 

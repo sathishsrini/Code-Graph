@@ -580,8 +580,8 @@ None of these were type errors. **Run it against real data before believing it.*
 | P2-T5 service grouping and filters | — | not started |
 | **P2-T6 Mermaid emitter** | `a5ac611` | **done** |
 | P2-T7 OTel instrumentation | — | blocked on OPEN-7 (external owner) |
-| P2-T8 OTLP receiver → `spans` | — | not started |
-| P2-T9 promotion + overlay | — | not started |
+| P2-T8 OTLP receiver → `spans` | `PEND` | **done** |
+| P2-T9 promotion + overlay | `PEND` | **done (overlay is P2-T5)** |
 | P2-T10 error backtracking | — | not started |
 | P2-T11 GitHub Action | — | not started |
 | P2-T12 execution-path rendering | — | not started |
