@@ -573,18 +573,18 @@ None of these were type errors. **Run it against real data before believing it.*
 
 | Task | Commit | State |
 |---|---|---|
-| P2-T1 UI shell (elkjs + SVG) | `PEND` | **done** (D26) |
-| P2-T2 ordered chain band | `PEND` | **done** |
-| P2-T3 node inspector | `PEND` | **done** |
-| P2-T4 confidence + security-provenance colouring | `PEND` | **done** |
-| P2-T5 service grouping and filters | `PEND` | **done** |
+| P2-T1 UI shell (elkjs + SVG) | `d5df0ee` | **done** (D26) |
+| P2-T2 ordered chain band | `d5df0ee` | **done** |
+| P2-T3 node inspector | `d5df0ee` | **done** |
+| P2-T4 confidence + security-provenance colouring | `d5df0ee` | **done** |
+| P2-T5 service grouping and filters | `d5df0ee` | **done** |
 | **P2-T6 Mermaid emitter** | `a5ac611` | **done** |
 | P2-T7 OTel instrumentation | — | blocked on OPEN-7 (external owner) |
 | P2-T8 OTLP receiver → `spans` | `30324e7` | **done** |
 | P2-T9 promotion + overlay | `30324e7` | **done (overlay is P2-T5)** |
 | P2-T10 error backtracking | `b3bf145` | **done** |
 | P2-T11 GitHub Action | `c5b1505` | **done** |
-| P2-T12 execution-path rendering | `PEND` | **done** |
+| P2-T12 execution-path rendering | `d5df0ee` | **done** |
 
 ## P2-T6 — Mermaid emitter
 
