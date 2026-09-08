@@ -26,6 +26,8 @@ import { endpointFlow, RouteNotFound } from "./query/endpoint-flow.ts";
 import { renderEndpointFlow } from "./query/endpoint-flow-render.ts";
 import { impact, SeedNotFound } from "./query/impact.ts";
 import { renderImpact } from "./query/impact-render.ts";
+import { securityPath } from "./query/security.ts";
+import { renderSecurity, renderRouteSecurity } from "./query/security-render.ts";
 import {
   runScipTypescript, runScipPython, documentAllowed,
 } from "./static/scip/runner.ts";
@@ -33,6 +35,7 @@ import { scanRepo, renderScan } from "./static/treesitter/report.ts";
 import { indexRepo, linkCrossServiceRepos, type IndexReport } from "./index/pipeline.ts";
 import { renderIndexReport } from "./index/report.ts";
 
+const BREAK = String.fromCharCode(10);
 const DEFAULT_DB = ".codeintel/graph.db";
 const DEFAULT_CONFIG = "config/repos.json";
 
@@ -52,6 +55,7 @@ COMMANDS
   scan                tree-sitter pass: throws, http, datastores, config (P1-T6)
   index               Index every repo into the fact store, incrementally (P1-T11)
   impact <symbol>     What breaks if this changes — reverse closure (P1-T13)
+  security            Coverage matrix + the writes-without-tenant anomaly (P1-T14)
   help                Show this message
 
 OPTIONS
@@ -69,6 +73,8 @@ OPTIONS
   --externals         flow: list every boundary call instead of summarising
   --fan-in <n>        impact: callers above which a symbol is a utility (default 10)
   --limit <n>         impact: routes to list before trimming     (default 25)
+  --anomaly <kind>    security: check kind whose absence over a write is flagged
+                      (default: tenant)
   --force             index: re-run every derivation, ignoring the changed set
   --reset             db bootstrap: delete an existing database first
   --skip-path-check   config check: don't verify rootPath exists on disk
@@ -96,6 +102,7 @@ interface Options {
   externals: boolean;
   fanIn: number | undefined;
   limit: number | undefined;
+  anomaly: string;
   checkPaths: boolean;
   json: boolean;
 }
@@ -123,6 +130,7 @@ async function main(argv: string[]): Promise<number> {
         externals: { type: "boolean", default: false },
         "fan-in": { type: "string" },
         limit: { type: "string" },
+        anomaly: { type: "string" },
         // node:util parseArgs has no "--no-x" negation, so this is stated
         // positively. The default remains "do check paths".
         "skip-path-check": { type: "boolean", default: false },
@@ -153,6 +161,7 @@ async function main(argv: string[]): Promise<number> {
     externals: values.externals === true,
     fanIn: values["fan-in"] ? Number(values["fan-in"]) : undefined,
     limit: values.limit ? Number(values.limit) : undefined,
+    anomaly: values.anomaly ?? "tenant",
     checkPaths: values["skip-path-check"] !== true,
     json: values.json === true,
   };
@@ -204,6 +213,9 @@ async function main(argv: string[]): Promise<number> {
 
     case "impact":
       return cmdImpact(options, positionals[1] ?? "");
+
+    case "security":
+      return cmdSecurity(options);
 
     case "derive":
       if (sub !== "calls") {
@@ -592,6 +604,47 @@ function cmdImpact(options: Options, seed: string): number {
       return 1;
     }
     throw e;
+  } finally {
+    store.close();
+  }
+}
+
+/**
+
+ * security — the coverage matrix and R40's anomaly query (P1-T14).
+ *
+ * With --method/--path it prints one route's ordered security chain instead,
+ * which is the doc's highest value-per-hour view.
+ */
+function cmdSecurity(options: Options): number {
+  const store = new FactStore(options.db);
+  try {
+    const report = securityPath(store, {
+      service: options.repo || undefined,
+      anomalyKind: options.anomaly,
+      maxDepth: options.depth,
+    });
+
+    if (options.method && options.path) {
+      const one = report.routes.find(
+        (r) => r.method === options.method.toUpperCase() && r.url === options.path,
+      );
+      if (!one) {
+        process.stderr.write(`security: no route ${options.method} ${options.path}` + BREAK);
+        return 1;
+      }
+      process.stdout.write(
+        options.json ? JSON.stringify(one, null, 2) + BREAK : renderRouteSecurity(one),
+      );
+      return 0;
+    }
+
+    process.stdout.write(
+      options.json
+        ? JSON.stringify(report, null, 2) + BREAK
+        : renderSecurity(report, options.anomaly),
+    );
+    return 0;
   } finally {
     store.close();
   }
