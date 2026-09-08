@@ -33,6 +33,8 @@ import { startMcpServer } from "./mcp/server.ts";
 import { flowToMermaid } from "./serializers/mermaid.ts";
 import { startReceiver } from "./runtime/receiver.ts";
 import { promote, possiblyDeadEdges } from "./runtime/promote.ts";
+import { errorPaths } from "./query/errors.ts";
+import { renderErrorReport } from "./query/errors-render.ts";
 import {
   runScipTypescript, runScipPython, documentAllowed,
 } from "./static/scip/runner.ts";
@@ -65,6 +67,7 @@ COMMANDS
   mcp                 Serve the four queries over MCP on stdio (P1-T16)
   otlp serve          Receive OTLP/HTTP traces into the spans table (P2-T8)
   promote             Confirm inferred edges against observed traces (P2-T9)
+  errors              Observed / static / correlated failure analysis (P2-T10)
   help                Show this message
 
 OPTIONS
@@ -266,6 +269,9 @@ async function main(argv: string[]): Promise<number> {
 
     case "promote":
       return cmdPromote(options);
+
+    case "errors":
+      return cmdErrors(options);
 
     case "mcp":
       // Never returns: the transport owns the process until stdin closes.
@@ -756,6 +762,39 @@ function cmdContext(options: Options, seed: string): number {
       return 1;
     }
     throw e;
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * errors — the three-section failure analysis (P2-T10).
+ *
+ * The sections are computed by two independent passes and are never merged
+ * (R41). A single verdict would overstate the observed by adding
+ * possibilities, and understate the static by weighting on traffic.
+ */
+function cmdErrors(options: Options): number {
+  if (!options.repo || !options.method || !options.path) {
+    process.stderr.write(
+      "errors requires --repo <service> --method <verb> --path <url>" + BREAK,
+    );
+    return 2;
+  }
+  const store = new FactStore(options.db);
+  try {
+    const report = errorPaths(store, options.repo, options.method, options.path, {
+      maxDepth: options.depth,
+    });
+    process.stdout.write(
+      options.json
+        ? JSON.stringify(report, null, 2) + BREAK
+        : renderErrorReport(report),
+    );
+    return 0;
+  } catch (e) {
+    process.stderr.write(`errors: ${(e as Error).message}` + BREAK);
+    return 1;
   } finally {
     store.close();
   }
