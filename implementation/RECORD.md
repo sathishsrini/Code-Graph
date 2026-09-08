@@ -583,7 +583,7 @@ None of these were type errors. **Run it against real data before believing it.*
 | P2-T8 OTLP receiver → `spans` | `30324e7` | **done** |
 | P2-T9 promotion + overlay | `30324e7` | **done (overlay is P2-T5)** |
 | P2-T10 error backtracking | `b3bf145` | **done** |
-| P2-T11 GitHub Action | `PEND` | **done** |
+| P2-T11 GitHub Action | `c5b1505` | **done** |
 | P2-T12 execution-path rendering | — | not started |
 
 ## P2-T6 — Mermaid emitter
