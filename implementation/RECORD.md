@@ -75,7 +75,7 @@ as unnamed locals.
 | P1-T11 incremental indexing | `59972c5` | **done** |
 | P1-T12 `endpoint_flow` | `6e3a5a4` | **done** |
 | P1-T13 `impact` | `8d050ec` | **done** |
-| P1-T14 `security_path` | `PENDING14` | **done** |
+| P1-T14 `security_path` | `180ca9b` | **done** |
 | P1-T15 `context_pack` | — | not started |
 | P1-T16 MCP server | — | not started |
 | P1-T17 intra-function CFG | — | not started |
