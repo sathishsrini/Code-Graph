@@ -582,7 +582,7 @@ None of these were type errors. **Run it against real data before believing it.*
 | P2-T7 OTel instrumentation | — | blocked on OPEN-7 (external owner) |
 | P2-T8 OTLP receiver → `spans` | `30324e7` | **done** |
 | P2-T9 promotion + overlay | `30324e7` | **done (overlay is P2-T5)** |
-| P2-T10 error backtracking | `PEND` | **done** |
+| P2-T10 error backtracking | `b3bf145` | **done** |
 | P2-T11 GitHub Action | — | not started |
 | P2-T12 execution-path rendering | — | not started |
 
