@@ -28,6 +28,7 @@ import { impact, SeedNotFound } from "./query/impact.ts";
 import { renderImpact } from "./query/impact-render.ts";
 import { securityPath } from "./query/security.ts";
 import { renderSecurity, renderRouteSecurity } from "./query/security-render.ts";
+import { contextPack, packToToon, measureTokenDelta } from "./query/context-pack.ts";
 import {
   runScipTypescript, runScipPython, documentAllowed,
 } from "./static/scip/runner.ts";
@@ -56,6 +57,7 @@ COMMANDS
   index               Index every repo into the fact store, incrementally (P1-T11)
   impact <symbol>     What breaks if this changes — reverse closure (P1-T13)
   security            Coverage matrix + the writes-without-tenant anomaly (P1-T14)
+  context <symbol>    Minimum context to edit this function, budgeted (P1-T15)
   help                Show this message
 
 OPTIONS
@@ -73,6 +75,9 @@ OPTIONS
   --externals         flow: list every boundary call instead of summarising
   --fan-in <n>        impact: callers above which a symbol is a utility (default 10)
   --limit <n>         impact: routes to list before trimming     (default 25)
+  --budget <n>        context: token budget                      (default 4000)
+  --no-source         context: omit tier-1 raw source
+  --measure           context: also report the R71 token delta vs dumping files
   --anomaly <kind>    security: check kind whose absence over a write is flagged
                       (default: tenant)
   --force             index: re-run every derivation, ignoring the changed set
@@ -103,6 +108,9 @@ interface Options {
   fanIn: number | undefined;
   limit: number | undefined;
   anomaly: string;
+  budget: number | undefined;
+  noSource: boolean;
+  measure: boolean;
   checkPaths: boolean;
   json: boolean;
 }
@@ -131,6 +139,9 @@ async function main(argv: string[]): Promise<number> {
         "fan-in": { type: "string" },
         limit: { type: "string" },
         anomaly: { type: "string" },
+        budget: { type: "string" },
+        "no-source": { type: "boolean", default: false },
+        measure: { type: "boolean", default: false },
         // node:util parseArgs has no "--no-x" negation, so this is stated
         // positively. The default remains "do check paths".
         "skip-path-check": { type: "boolean", default: false },
@@ -162,6 +173,9 @@ async function main(argv: string[]): Promise<number> {
     fanIn: values["fan-in"] ? Number(values["fan-in"]) : undefined,
     limit: values.limit ? Number(values.limit) : undefined,
     anomaly: values.anomaly ?? "tenant",
+    budget: values.budget ? Number(values.budget) : undefined,
+    noSource: values["no-source"] === true,
+    measure: values.measure === true,
     checkPaths: values["skip-path-check"] !== true,
     json: values.json === true,
   };
@@ -216,6 +230,9 @@ async function main(argv: string[]): Promise<number> {
 
     case "security":
       return cmdSecurity(options);
+
+    case "context":
+      return cmdContext(options, positionals[1] ?? "");
 
     case "derive":
       if (sub !== "calls") {
@@ -645,6 +662,56 @@ function cmdSecurity(options: Options): number {
         : renderSecurity(report, options.anomaly),
     );
     return 0;
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * context — the minimum context to edit a function (P1-T15).
+ *
+ * `--measure` prints R71's number: the pack against dumping every file it
+ * touches, which is what an agent does when it has no graph.
+ */
+function cmdContext(options: Options, seed: string): number {
+  if (!seed) {
+    process.stderr.write("context requires a symbol: node src/cli.ts context <name>" + BREAK);
+    return 2;
+  }
+  const store = new FactStore(options.db);
+  try {
+    const pack = contextPack(store, seed, {
+      budget: options.budget,
+      includeSource: !options.noSource,
+    });
+
+    if (options.json) {
+      const body = options.measure
+        ? { ...pack, delta: measureTokenDelta(store, pack) }
+        : pack;
+      process.stdout.write(JSON.stringify(body, null, 2) + BREAK);
+      return 0;
+    }
+
+    process.stdout.write(packToToon(pack));
+    if (options.measure) {
+      const d = measureTokenDelta(store, pack);
+      process.stdout.write(
+        BREAK +
+        "R71 TOKEN DELTA" + BREAK +
+        `  pack        : ${d.packTokens} tokens` + BREAK +
+        `  file dump   : ${d.dumpTokens} tokens across ${d.files} file(s)` + BREAK +
+        `  ratio       : ${(d.ratio * 100).toFixed(1)}% of dumping the files` + BREAK,
+      );
+    }
+    return 0;
+  } catch (e) {
+    if (e instanceof SeedNotFound) {
+      process.stderr.write(`context: ${e.message}` + BREAK);
+      for (const m of e.matches) process.stderr.write(`  ${m.display}  ${m.key}` + BREAK);
+      return 1;
+    }
+    throw e;
   } finally {
     store.close();
   }

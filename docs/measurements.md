@@ -497,4 +497,60 @@ symbol `proxyToEngine()`. Verified in the store: `src_kind='file'` vs
 
 ---
 
-**Last Updated**: 2026-09-07
+## M9 — `context_pack` token delta
+
+**Date**: 2026-09-08 · **Task**: P1-T15 · **Gate**: R71 — *the number that justifies the project*
+
+```bash
+node src/cli.ts context <symbol> --measure
+node src/cli.ts context <symbol> --measure --no-source
+```
+
+Baseline: every file containing anything in the pack, dumped whole. That is
+what an agent does when it has no graph.
+
+| Seed | Service | with tier-1 source | signatures only |
+|---|---|---|---|
+| `proxyToEngine` | 40-kri-router | 66.5% | **25.8%** |
+| `checkUserAuth` | 40-kri-router | 26.9% | **23.0%** |
+| `forward` | 40-kri-router | 22.9% | — |
+| `POPage` | 60-kri-next | **100.9%** | **4.1%** |
+| `Sidebar` | 60-kri-next | **109.3%** | **17.7%** |
+
+### The finding is not the win, it is where the win comes from
+
+**The pack's value is the structure, not the source.** With tier-1 source
+included the pack ranges 23%–109% and on two seeds is *larger than dumping the
+file*. Without it, 4%–26%.
+
+That is not a defect in the packer. It is arithmetic: `POPage` is 126 of the
+~150 lines of `po/page.tsx`, so "the seed's body" and "the file" are nearly the
+same text, and everything else the pack adds is overhead. R42's tier 1 is
+specified to carry source, so the default keeps it — but the mode that delivers
+R71's win is `--no-source`, and an agent editing a function usually has that
+file open already.
+
+**Recommendation, not yet applied:** flip the default to signatures-only and
+make source opt-in. It changes P1-T15's spec, so it is recorded here rather
+than done unilaterally.
+
+### What this corpus cannot show
+
+The ratio is measured on services of **1 to 12 small files**. A pack's real
+advantage is not dumping the *other* files, and here there are almost none —
+`40-kri-router` is a single 347-line file, so the baseline is already close to
+minimal. On a repo where a function's context spans fifteen files across three
+packages, the dump grows and the pack does not. **That number is unmeasured**,
+and the numbers above are the corpus's worst case rather than a representative
+one.
+
+### Not counted
+
+`measureTokenDelta` counts only files it can resolve through the `files` table.
+A pack item whose `where` is a service name (routes) or `[file-scope]` (config)
+contributes no file to the baseline, which makes the baseline **conservative** —
+the true dump is larger, so the true ratio is better than reported.
+
+---
+
+**Last Updated**: 2026-09-08
