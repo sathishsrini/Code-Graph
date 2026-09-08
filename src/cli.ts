@@ -30,6 +30,7 @@ import { securityPath } from "./query/security.ts";
 import { renderSecurity, renderRouteSecurity } from "./query/security-render.ts";
 import { contextPack, packToToon, measureTokenDelta } from "./query/context-pack.ts";
 import { startMcpServer } from "./mcp/server.ts";
+import { flowToMermaid } from "./serializers/mermaid.ts";
 import {
   runScipTypescript, runScipPython, documentAllowed,
 } from "./static/scip/runner.ts";
@@ -75,6 +76,7 @@ OPTIONS
   --artifacts         flow: read a .scip file + boot dump instead of the store
   --no-remote         flow: stop at the service boundary, do not follow REQUESTS
   --externals         flow: list every boundary call instead of summarising
+  --mermaid           flow: emit a Mermaid diagram instead of a tree (P2-T6)
   --fan-in <n>        impact: callers above which a symbol is a utility (default 10)
   --limit <n>         impact: routes to list before trimming     (default 25)
   --budget <n>        context: token budget                      (default 4000)
@@ -107,6 +109,7 @@ interface Options {
   fromArtifacts: boolean;
   noRemote: boolean;
   externals: boolean;
+  mermaid: boolean;
   fanIn: number | undefined;
   limit: number | undefined;
   anomaly: string;
@@ -138,6 +141,7 @@ async function main(argv: string[]): Promise<number> {
         artifacts: { type: "boolean", default: false },
         "no-remote": { type: "boolean", default: false },
         externals: { type: "boolean", default: false },
+        mermaid: { type: "boolean", default: false },
         "fan-in": { type: "string" },
         limit: { type: "string" },
         anomaly: { type: "string" },
@@ -172,6 +176,7 @@ async function main(argv: string[]): Promise<number> {
     fromArtifacts: values.artifacts === true,
     noRemote: values["no-remote"] === true,
     externals: values.externals === true,
+    mermaid: values.mermaid === true,
     fanIn: values["fan-in"] ? Number(values["fan-in"]) : undefined,
     limit: values.limit ? Number(values.limit) : undefined,
     anomaly: values.anomaly ?? "tenant",
@@ -578,7 +583,13 @@ function cmdFlowFromStore(options: Options): number {
       followRemote: !options.noRemote,
     });
     process.stdout.write(
-      options.json ? `${JSON.stringify(flow, null, 2)}\n` : renderEndpointFlow(flow),
+      options.json
+        ? `${JSON.stringify(flow, null, 2)}\n`
+        : options.mermaid
+          // R46: ~20 lines that render in a PR comment, read by people who
+          // will never open a UI.
+          ? `${flowToMermaid(flow, { externals: options.externals })}\n`
+          : renderEndpointFlow(flow, "", { externals: options.externals }),
     );
     return 0;
   } catch (e) {
