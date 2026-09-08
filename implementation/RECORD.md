@@ -77,7 +77,7 @@ as unnamed locals.
 | P1-T13 `impact` | `8d050ec` | **done** |
 | P1-T14 `security_path` | `180ca9b` | **done** |
 | P1-T15 `context_pack` | `9dac246` | **done** |
-| P1-T16 MCP server | — | not started |
+| P1-T16 MCP server | `PENDING16` | **done — PHASE 1 GATE** |
 | P1-T17 intra-function CFG | — | not started |
 | P1-T18 guard attribution | — | not started |
 

@@ -29,6 +29,7 @@ import { renderImpact } from "./query/impact-render.ts";
 import { securityPath } from "./query/security.ts";
 import { renderSecurity, renderRouteSecurity } from "./query/security-render.ts";
 import { contextPack, packToToon, measureTokenDelta } from "./query/context-pack.ts";
+import { startMcpServer } from "./mcp/server.ts";
 import {
   runScipTypescript, runScipPython, documentAllowed,
 } from "./static/scip/runner.ts";
@@ -58,6 +59,7 @@ COMMANDS
   impact <symbol>     What breaks if this changes — reverse closure (P1-T13)
   security            Coverage matrix + the writes-without-tenant anomaly (P1-T14)
   context <symbol>    Minimum context to edit this function, budgeted (P1-T15)
+  mcp                 Serve the four queries over MCP on stdio (P1-T16)
   help                Show this message
 
 OPTIONS
@@ -233,6 +235,11 @@ async function main(argv: string[]): Promise<number> {
 
     case "context":
       return cmdContext(options, positionals[1] ?? "");
+
+    case "mcp":
+      // Never returns: the transport owns the process until stdin closes.
+      await startMcpServer(options.db);
+      return 0;
 
     case "derive":
       if (sub !== "calls") {
