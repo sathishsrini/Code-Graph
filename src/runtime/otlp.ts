@@ -40,7 +40,11 @@ export interface NormalisedSpan {
   durationUs: number;
   status: "ok" | "error" | "unset";
   statusMessage: string | null;
+  /** `http.route` — the TEMPLATE. Often absent; see migration 007. */
   httpRoute: string | null;
+  /** `url.path` — the CONCRETE path. What actually arrives without framework
+   *  instrumentation, and the fallback the route match runs on. */
+  urlPath: string | null;
   httpMethod: string | null;
   httpStatus: number | null;
   codeFunction: string | null;
@@ -49,6 +53,7 @@ export interface NormalisedSpan {
   dbName: string | null;
   dbOperation: string | null;
   serverAddress: string | null;
+  serverPort: number | null;
   exceptionType: string | null;
   exceptionMessage: string | null;
   semconv: string;
@@ -69,6 +74,8 @@ const ALIASES: Record<string, readonly string[]> = {
   "http.request.method": ["http.request.method", "http.method"],
   "http.response.status_code": ["http.response.status_code", "http.status_code"],
   "server.address": ["server.address", "net.peer.name", "http.host"],
+  "server.port": ["server.port", "net.peer.port"],
+  "url.path": ["url.path", "http.target", "http.path"],
   "db.namespace": ["db.namespace", "db.name"],
   "db.operation.name": ["db.operation.name", "db.operation"],
   "db.system.name": ["db.system.name", "db.system"],
@@ -184,6 +191,7 @@ export function normalise(payload: OtlpPayload): NormalisedSpan[] {
           status: statusOf(span.status?.code),
           statusMessage: span.status?.message ?? null,
           httpRoute: str(attr(attributes, "http.route")),
+          urlPath: str(attr(attributes, "url.path")),
           httpMethod: str(attr(attributes, "http.request.method")),
           httpStatus: int(attr(attributes, "http.response.status_code")),
           codeFunction: str(attr(attributes, "code.function.name")),
@@ -192,6 +200,7 @@ export function normalise(payload: OtlpPayload): NormalisedSpan[] {
           dbName: str(attr(attributes, "db.namespace")),
           dbOperation: str(attr(attributes, "db.operation.name")),
           serverAddress: str(attr(attributes, "server.address")),
+          serverPort: int(attr(attributes, "server.port")),
           exceptionType: str(exceptionAttrs["exception.type"]),
           exceptionMessage: str(exceptionAttrs["exception.message"]),
           semconv: SEMCONV_VERSION,
@@ -356,9 +365,9 @@ export function insertSpans(store: FactStore, spans: NormalisedSpan[]): number {
        (trace_id, span_id, parent_span_id, name, kind, service_name,
         start_unix_us, end_unix_us, duration_us, status, status_message,
         http_route, http_method, http_status, code_function, code_filepath,
-        db_system, db_name, db_operation, server_address,
-        exception_type, exception_message, semconv, attributes, received_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        db_system, db_name, db_operation, server_address, server_port,
+        url_path, exception_type, exception_message, semconv, attributes, received_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
              datetime('now'))
      ON CONFLICT DO NOTHING`,
   );
@@ -370,8 +379,8 @@ export function insertSpans(store: FactStore, spans: NormalisedSpan[]): number {
         s.traceId, s.spanId, s.parentSpanId, s.name, s.kind, s.serviceName,
         s.startUnixUs, s.endUnixUs, s.durationUs, s.status, s.statusMessage,
         s.httpRoute, s.httpMethod, s.httpStatus, s.codeFunction, s.codeFilepath,
-        s.dbSystem, s.dbName, s.dbOperation, s.serverAddress,
-        s.exceptionType, s.exceptionMessage, s.semconv,
+        s.dbSystem, s.dbName, s.dbOperation, s.serverAddress, s.serverPort,
+        s.urlPath, s.exceptionType, s.exceptionMessage, s.semconv,
         JSON.stringify(s.attributes),
       );
       n += 1;

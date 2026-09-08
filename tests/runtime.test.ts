@@ -142,9 +142,10 @@ describe("R53 — tail-based sampling", () => {
   const span = (over: Partial<NormalisedSpan>): NormalisedSpan => ({
     traceId: "t", spanId: "s", parentSpanId: null, name: "n", kind: "server",
     serviceName: "svc", startUnixUs: 1, endUnixUs: 2, durationUs: 1,
-    status: "ok", statusMessage: null, httpRoute: null, httpMethod: null,
+    status: "ok", statusMessage: null, httpRoute: null, urlPath: null, httpMethod: null,
     httpStatus: null, codeFunction: null, codeFilepath: null, dbSystem: null,
-    dbName: null, dbOperation: null, serverAddress: null, exceptionType: null,
+    dbName: null, dbOperation: null, serverAddress: null, serverPort: null,
+    exceptionType: null,
     exceptionMessage: null, semconv: SEMCONV_VERSION, attributes: {},
     ...over,
   });

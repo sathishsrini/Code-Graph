@@ -553,4 +553,91 @@ the true dump is larger, so the true ratio is better than reported.
 
 ---
 
-**Last Updated**: 2026-09-08
+## M10 — `http.route` does NOT come free
+
+**Date**: 2026-09-09 · **Task**: P2-T7 · **Requirement**: R52, R54
+
+R52 states that instrumenting a service gives `http.route` for nothing, and R54
+makes `service.name` + `http.route` the primary runtime join key. Measured
+against `40-kri-router` under `@opentelemetry/auto-instrumentations-node`,
+preloaded with `node --import`:
+
+```
+node src/cli.ts otlp serve --sample-rate 1
+OTEL_SERVICE_NAME=40-kri-router node --import file:///…/preload.mjs server.js
+node src/cli.ts traffic --rounds 3
+```
+
+19 spans arrived. **`http.route` was NULL on every one.** What a server span
+actually carried:
+
+```
+http.request.method       = GET
+http.response.status_code = 200
+url.path                  = /api/v1/po      <- concrete, not a template
+server.address            = 127.0.0.1
+server.port               = 3001
+service.name              = 40-kri-router
+```
+
+### Why
+
+`http.route` is set by **framework** instrumentation, not HTTP
+instrumentation. Only the router knows which template a concrete path matched;
+the HTTP layer never sees the routing table. Where the framework
+instrumentation does not attach — as here, with Fastify 4 required from
+CommonJS under an ESM preload — the attribute simply is not emitted.
+
+### Consequence, and the fix
+
+Two queries joined on `http_route` and both silently found nothing:
+
+| | before | after |
+|---|---|---|
+| `promote` — routes matched | 0 | **5** (by template match on `url.path`) |
+| `errors` — errored traces on a route | "none recorded" | 3, with origin and propagation |
+
+The second was the worse failure: `errors --path /api/v1/auth/login` reported
+**"no errored trace recorded"** for a route that had just returned three 502s.
+
+`src/runtime/route-match.ts` matches a concrete path against route templates,
+in one place because two callers needed it. Exact template equality is a
+lookup; a parameterised match is accepted **only when exactly one template
+fits**, because `/api/v1/po/42` against two templates is a genuine ambiguity
+and not a coin to flip. `promote` counts template matches **separately** from
+exact ones — the traffic is observed, the route it hit is inferred.
+
+### The end-to-end result
+
+`errors --repo 40-kri-router --method POST --path /api/v1/auth/login`, with the
+engine deliberately not running:
+
+```
+OBSERVED
+  trace b01dac3b…
+    ORIGIN  depth 1  40-kri-router  POST
+            ECONNREFUSED
+    propagated up through:
+      d0  40-kri-router  POST -> 502
+
+STATIC FAILURE SURFACE
+  server.js:82   checkUserAuth  return_error  HTTP 401                      when: !token
+  server.js:161  proxyAuth      return_error  KRI40-DOWNSTREAM-TIMEOUT-001  when: e
+```
+
+Two independent passes agreeing without being told to: the static surface
+predicted `proxyAuth` returns a downstream-timeout error from its `catch`, and
+three real traces show exactly that happening. Neither pass read the other's
+result — that is R41 working, not a coincidence.
+
+### Still unmeasured
+
+`code.function.name` and `code.file.path` were absent too, for the same reason
+in reverse: they require **manual** spans per function, which R52 says and which
+`preload.mjs` deliberately does not add wholesale — wrapping every function
+changes the shape of the thing being measured. So the span→symbol join (R54's
+second key) is wired and unexercised, and 0 symbols matched.
+
+---
+
+**Last Updated**: 2026-09-09

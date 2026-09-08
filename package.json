@@ -23,6 +23,11 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.80.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
+    "@opentelemetry/resources": "^2.11.0",
+    "@opentelemetry/sdk-node": "^0.222.0",
+    "@opentelemetry/semantic-conventions": "^1.43.0",
     "@sourcegraph/scip-python": "^0.6.6",
     "@types/node": "^22.0.0",
     "elkjs": "^0.9.3",

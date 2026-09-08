@@ -23,10 +23,18 @@
 // ============================================================================
 
 import type { FactStore } from "../store/db.ts";
+import { matchTemplate } from "./route-match.ts";
 
 export interface PromotionReport {
-  /** Spans that matched a node. */
+  /** Spans whose `http.route` matched a route exactly. */
   matchedRoutes: number;
+  /**
+   * Spans matched by pattern-matching `url.path` against route templates.
+   *
+   * Counted apart from `matchedRoutes` because it is a weaker claim: the
+   * traffic is observed, the route it hit is inferred.
+   */
+  routesByTemplate: number;
   matchedSymbols: number;
   matchedDatastores: number;
   /** Edges upgraded `inferred` -> `observed`. */
@@ -58,20 +66,29 @@ export function promote(
   const db = store.raw();
   const ports = options.servicePorts ?? new Map<number, string>();
   const report: PromotionReport = {
-    matchedRoutes: 0, matchedSymbols: 0, matchedDatastores: 0,
+    matchedRoutes: 0, routesByTemplate: 0, matchedSymbols: 0, matchedDatastores: 0,
     promoted: 0, added: 0, unmatched: 0, possiblyDead: 0,
   };
 
   // --- server spans confirm a route was hit -------------------------------
+  //
+  // `http.route` is the template and is the exact join. It is also frequently
+  // ABSENT: R52 claims it comes free from auto-instrumentation and measured
+  // against this corpus it never arrived at all — the HTTP instrumentation
+  // emits `url.path` (concrete) and only *framework* instrumentation upgrades
+  // it (migration 007). So the concrete path is matched against templates as a
+  // fallback, and `routesByTemplate` counts that separately because it is an
+  // inference, not a lookup.
   const routeHits = db.prepare(
-    `SELECT s.service_name, s.http_route, s.http_method,
+    `SELECT s.service_name, s.http_route, s.url_path, s.http_method,
             MAX(s.start_unix_us) AS last_us, COUNT(*) AS hits
        FROM spans s
-      WHERE s.http_route IS NOT NULL
-      GROUP BY s.service_name, s.http_route, s.http_method`,
+      WHERE (s.http_route IS NOT NULL OR s.url_path IS NOT NULL)
+        AND (s.kind IS NULL OR s.kind = 'server')
+      GROUP BY s.service_name, s.http_route, s.url_path, s.http_method`,
   ).all() as Array<{
-    service_name: string; http_route: string; http_method: string | null;
-    last_us: number; hits: number;
+    service_name: string; http_route: string | null; url_path: string | null;
+    http_method: string | null; last_us: number; hits: number;
   }>;
 
   const findRoute = db.prepare(
@@ -80,12 +97,25 @@ export function promote(
   );
 
   for (const hit of routeHits) {
-    const row = findRoute.get(
-      hit.service_name, hit.http_route, hit.http_method, hit.http_method,
-    ) as { node_id: number } | undefined;
-    if (!row) { report.unmatched += 1; continue; }
-    report.matchedRoutes += 1;
-    touch(store, row.node_id, hit.last_us);
+    let nodeId: number | undefined;
+
+    if (hit.http_route) {
+      nodeId = (findRoute.get(
+        hit.service_name, hit.http_route, hit.http_method, hit.http_method,
+      ) as { node_id: number } | undefined)?.node_id;
+      if (nodeId !== undefined) report.matchedRoutes += 1;
+    }
+
+    if (nodeId === undefined && hit.url_path) {
+      const matched = matchTemplate(store, hit.service_name, hit.url_path, hit.http_method);
+      if (matched !== null) {
+        nodeId = matched;
+        report.routesByTemplate += 1;
+      }
+    }
+
+    if (nodeId === undefined) { report.unmatched += 1; continue; }
+    touch(store, nodeId, hit.last_us);
   }
 
   // --- client spans confirm a cross-service call --------------------------
@@ -96,7 +126,7 @@ export function promote(
     `SELECT child.service_name AS caller_service,
             child.http_route   AS callee_route,
             child.http_method  AS callee_method,
-            child.server_address,
+            child.server_address, child.server_port,
             parent.http_route  AS caller_route,
             parent.service_name AS parent_service,
             MAX(child.start_unix_us) AS last_us
@@ -106,11 +136,14 @@ export function promote(
              AND parent.trace_id = child.trace_id
       WHERE child.kind = 'client' AND child.http_route IS NOT NULL
       GROUP BY child.service_name, child.http_route, child.http_method,
-               child.server_address, parent.http_route, parent.service_name`,
+               child.server_address, child.server_port, parent.http_route, parent.service_name`,
   ).all() as Array<Record<string, string | number | null>>;
 
   for (const call of clientCalls) {
-    const calleeService = serviceAtAddress(store, String(call["server_address"] ?? ""), ports);
+    const calleeService = serviceAtAddress(
+      store, String(call["server_address"] ?? ""), ports,
+      call["server_port"] === null ? null : Number(call["server_port"]),
+    );
     if (!calleeService) { report.unmatched += 1; continue; }
 
     const callee = db.prepare(
@@ -268,6 +301,7 @@ function latestRuntimeRun(store: FactStore, nodeId: number): number {
  */
 function serviceAtAddress(
   store: FactStore, address: string, ports: Map<number, string>,
+  serverPort: number | null = null,
 ): string | null {
   if (!address) return null;
   const bare = address.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
@@ -282,10 +316,12 @@ function serviceAtAddress(
   }
 
   if (!LOOPBACK.has(host)) return null;
-  const port = Number(portText);
+  // `server.port` is its own attribute; the address is often just the host.
+  const port = Number(portText || serverPort);
   return Number.isFinite(port) ? ports.get(port) ?? null : null;
 }
 
+/** Hosts that can name a service running in this workspace. */
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
 
 /**

@@ -37,6 +37,7 @@ import { errorPaths } from "./query/errors.ts";
 import { renderErrorReport } from "./query/errors-render.ts";
 import { analysePr, renderPrComment } from "./ci/pr-impact.ts";
 import { startUi } from "./ui/server.ts";
+import { generateTraffic, corpusTargets } from "./runtime/traffic.ts";
 import {
   runScipTypescript, runScipPython, documentAllowed,
 } from "./static/scip/runner.ts";
@@ -72,6 +73,7 @@ COMMANDS
   errors              Observed / static / correlated failure analysis (P2-T10)
   pr-impact           Read a unified diff on stdin, emit an impact comment (P2-T11)
   ui                  Serve the graph viewer on localhost (P2-T1..T5, T12)
+  traffic             Drive requests at instrumented fixtures (P2-T7, OPEN-7)
   help                Show this message
 
 OPTIONS
@@ -96,6 +98,7 @@ OPTIONS
   --port <n>          otlp serve: listen port                    (default 4318)
   --sample-rate <r>   otlp serve: fraction of non-errored traces kept (default 0.01)
   --dead-after <d>    promote: days without confirmation before "possibly dead"
+  --rounds <n>        traffic: passes over the request list          (default 3)
   --anomaly <kind>    security: check kind whose absence over a write is flagged
                       (default: tenant)
   --force             index: re-run every derivation, ignoring the changed set
@@ -133,6 +136,7 @@ interface Options {
   port: number | undefined;
   sampleRate: number | undefined;
   deadAfter: number | undefined;
+  rounds: number | undefined;
   checkPaths: boolean;
   json: boolean;
 }
@@ -168,6 +172,7 @@ async function main(argv: string[]): Promise<number> {
         port: { type: "string" },
         "sample-rate": { type: "string" },
         "dead-after": { type: "string" },
+        rounds: { type: "string" },
         // node:util parseArgs has no "--no-x" negation, so this is stated
         // positively. The default remains "do check paths".
         "skip-path-check": { type: "boolean", default: false },
@@ -206,6 +211,7 @@ async function main(argv: string[]): Promise<number> {
     port: values.port ? Number(values.port) : undefined,
     sampleRate: values["sample-rate"] ? Number(values["sample-rate"]) : undefined,
     deadAfter: values["dead-after"] ? Number(values["dead-after"]) : undefined,
+    rounds: values.rounds ? Number(values.rounds) : undefined,
     checkPaths: values["skip-path-check"] !== true,
     json: values.json === true,
   };
@@ -282,6 +288,9 @@ async function main(argv: string[]): Promise<number> {
 
     case "ui":
       return await cmdUi(options);
+
+    case "traffic":
+      return await cmdTraffic(options);
 
     case "mcp":
       // Never returns: the transport owns the process until stdin closes.
@@ -778,6 +787,53 @@ function cmdContext(options: Options, seed: string): number {
 }
 
 /**
+ * traffic — drive requests at instrumented fixtures (P2-T7, OPEN-7).
+ *
+ * Proves the ingest and promotion path, and nothing else. This is not load
+ * testing and not a health check: OPEN-7's decision was that the engine team
+ * instruments the FIXTURES and real-service instrumentation is tracked as an
+ * external dependency with its own owner.
+ */
+async function cmdTraffic(options: Options): Promise<number> {
+  const ports = new Map<string, number>();
+  try {
+    for (const repo of loadConfig(options.config, { checkPaths: false }).repos) {
+      if (repo.port !== null) ports.set(repo.serviceName, repo.port);
+    }
+  } catch {
+    // Falling back to the built-in defaults is fine here; the generator names
+    // any service it could not reach.
+  }
+
+  const result = await generateTraffic(corpusTargets(ports), { rounds: options.rounds });
+
+  if (options.json) {
+    process.stdout.write(JSON.stringify(result, null, 2) + BREAK);
+    return 0;
+  }
+
+  process.stdout.write(
+    `sent   : ${result.sent}` + BREAK +
+    `ok     : ${result.ok}` + BREAK +
+    `failed : ${result.failed}   ` +
+    `(errors are driven on purpose — R53 keeps 100% of errored traces)` + BREAK +
+    `status : ${Object.entries(result.byStatus).map(([k, v]) => `${k}=${v}`).join(" ") || "none"}` + BREAK,
+  );
+  if (result.unreachable.length > 0) {
+    process.stdout.write(
+      BREAK + `NOT RUNNING: ${result.unreachable.join(", ")}` + BREAK +
+      `  start them with the OTel preload, e.g.` + BREAK +
+      `  OTEL_SERVICE_NAME=40-kri-router node --import ` +
+      `<repo>/adapters/otel/preload.mjs server.js` + BREAK,
+    );
+  }
+  process.stdout.write(
+    BREAK + `next: node src/cli.ts promote` + BREAK,
+  );
+  return result.sent > 0 ? 0 : 1;
+}
+
+/**
  * ui — the graph viewer (P2-T1..T5, P2-T12).
  *
  * Last on purpose. Doc §Q.3 names building the UI first as the most common way
@@ -952,7 +1008,9 @@ function cmdPromote(options: Options): number {
     process.stdout.write(
       `spans in store : ${spans}` + BREAK + BREAK +
       `MATCHED  (R54 join keys)` + BREAK +
-      `  routes       : ${report.matchedRoutes}` + BREAK +
+      `  routes       : ${report.matchedRoutes} exact (http.route)` + BREAK +
+      `                 ${report.routesByTemplate} by template match on url.path` +
+      `   (traffic observed, route inferred)` + BREAK +
       `  symbols      : ${report.matchedSymbols}` + BREAK +
       `  datastores   : ${report.matchedDatastores}` + BREAK +
       `  unmatched    : ${report.unmatched}   ` +

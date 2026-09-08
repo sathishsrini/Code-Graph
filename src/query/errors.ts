@@ -27,6 +27,7 @@
 import { execFileSync } from "node:child_process";
 import type { FactStore } from "../store/db.ts";
 import { displayNameOf } from "../static/scip/symbol.ts";
+import { spanPathsForRoute } from "../runtime/route-match.ts";
 
 // ---------------------------------------------------------------------------
 // M.1 — the static failure surface
@@ -229,17 +230,30 @@ export function traceRootCause(store: FactStore, traceId: string): RootCause {
   return { traceId, origin, propagation, spans: [...byId.values()] };
 }
 
-/** Recent errored traces touching a route, newest first. */
+/**
+ * Recent errored traces touching a route, newest first.
+ *
+ * Matches `http.route` when it is present and falls back to the concrete
+ * `url.path`, for the reason `route-match.ts` documents: R52's "http.route
+ * comes free" is false without framework instrumentation, and joining on it
+ * alone reported "no errored trace" for a route that had just returned six
+ * 4xx and 5xx responses.
+ */
 export function erroredTracesFor(
   store: FactStore, service: string, url: string, limit = 10,
 ): Array<{ traceId: string; when: string; status: number | null }> {
+  const paths = spanPathsForRoute(store, service, url);
+  const placeholders = paths.map(() => "?").join(", ");
+  const pathClause = paths.length > 0 ? ` OR s.url_path IN (${placeholders})` : "";
+
   return (store.raw().prepare(
     `SELECT DISTINCT s.trace_id, s.start_unix_us, s.http_status
        FROM spans s
-      WHERE s.service_name = ? AND s.http_route = ?
+      WHERE s.service_name = ?
+        AND (s.http_route = ?${pathClause})
         AND s.trace_id IN (SELECT trace_id FROM spans WHERE status = 'error')
       ORDER BY s.start_unix_us DESC LIMIT ?`,
-  ).all(service, url, limit) as Array<Record<string, string | number | null>>).map((r) => ({
+  ).all(service, url, ...paths, limit) as Array<Record<string, string | number | null>>).map((r) => ({
     traceId: String(r["trace_id"]),
     when: new Date(Number(r["start_unix_us"]) / 1000).toISOString(),
     status: r["http_status"] === null ? null : Number(r["http_status"]),
