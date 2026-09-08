@@ -35,6 +35,7 @@ import { startReceiver } from "./runtime/receiver.ts";
 import { promote, possiblyDeadEdges } from "./runtime/promote.ts";
 import { errorPaths } from "./query/errors.ts";
 import { renderErrorReport } from "./query/errors-render.ts";
+import { analysePr, renderPrComment } from "./ci/pr-impact.ts";
 import {
   runScipTypescript, runScipPython, documentAllowed,
 } from "./static/scip/runner.ts";
@@ -68,6 +69,7 @@ COMMANDS
   otlp serve          Receive OTLP/HTTP traces into the spans table (P2-T8)
   promote             Confirm inferred edges against observed traces (P2-T9)
   errors              Observed / static / correlated failure analysis (P2-T10)
+  pr-impact           Read a unified diff on stdin, emit an impact comment (P2-T11)
   help                Show this message
 
 OPTIONS
@@ -272,6 +274,9 @@ async function main(argv: string[]): Promise<number> {
 
     case "errors":
       return cmdErrors(options);
+
+    case "pr-impact":
+      return await cmdPrImpact(options);
 
     case "mcp":
       // Never returns: the transport owns the process until stdin closes.
@@ -762,6 +767,49 @@ function cmdContext(options: Options, seed: string): number {
       return 1;
     }
     throw e;
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * pr-impact — a unified diff on stdin, an impact comment on stdout (P2-T11).
+ *
+ * Reads stdin rather than taking a path so the workflow can pipe `git diff`
+ * straight in, with no temp file and no shell quoting of a base ref.
+ */
+async function cmdPrImpact(options: Options): Promise<number> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  const diff = Buffer.concat(chunks).toString("utf8");
+
+  if (diff.trim() === "") {
+    process.stderr.write(
+      "pr-impact: empty diff on stdin. Pipe one in:" + BREAK +
+      "  git diff origin/main...HEAD | node src/cli.ts pr-impact" + BREAK,
+    );
+    return 2;
+  }
+
+  const store = new FactStore(options.db);
+  try {
+    const result = analysePr(store, diff, { routeLimit: options.limit });
+    process.stdout.write(
+      options.json
+        ? JSON.stringify({
+            symbols: result.mapping.symbols,
+            unmapped: result.mapping.unmapped,
+            unindexedFiles: result.mapping.unindexedFiles,
+            routes: {
+              certain: [...result.routes.certain],
+              inferred: [...result.routes.inferred],
+              unknown: [...result.routes.unknown],
+            },
+            utilities: result.utilities,
+          }, null, 2) + BREAK
+        : renderPrComment(result) + BREAK,
+    );
+    return 0;
   } finally {
     store.close();
   }

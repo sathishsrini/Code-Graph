@@ -1,0 +1,102 @@
+# =============================================================================
+# PR impact comment  —  task P2-T11  (requirement R51)
+# =============================================================================
+# Diff -> enclosing symbols -> impact closure -> one PR comment, updated in
+# place rather than appended to.
+#
+# The index is rebuilt in THIS job, against THIS commit, and that is not an
+# optimisation to remove later. A diff gives line numbers in the new file; the
+# symbol ranges it is matched against must come from the same revision. An
+# index built from an older commit maps hunks to the wrong functions and the
+# comment is then confidently about the wrong code — the exact failure class
+# this engine exists to avoid.
+# =============================================================================
+
+name: impact
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Least privilege: read the code, write one comment. No checks, no statuses.
+permissions:
+  contents: read
+  pull-requests: write
+
+# A force-push mid-run should cancel the stale analysis rather than race it to
+# the comment.
+concurrency:
+  group: impact-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  impact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The merge-base is needed to diff against it, and a shallow clone
+          # does not have it.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Index this commit
+        # `|| true`: a service that will not boot, or a language whose indexer
+        # is unavailable, must not fail the PR. The comment reports what was
+        # not analysed, which is more useful than a red X with no detail.
+        run: |
+          node src/cli.ts db bootstrap
+          node src/cli.ts index || true
+
+      - name: Analyse the diff
+        id: analyse
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          git diff "$BASE...$HEAD" \
+            | node src/cli.ts pr-impact > impact-comment.md
+          echo "comment<<COMMENT_EOF" >> "$GITHUB_OUTPUT"
+          cat impact-comment.md >> "$GITHUB_OUTPUT"
+          echo "COMMENT_EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Upsert the comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('node:fs');
+            const body = fs.readFileSync('impact-comment.md', 'utf8');
+            const marker = '<!-- code-intel:impact -->';
+
+            // Update in place. A new comment per push turns a 12-commit PR into
+            // twelve near-identical walls of text, which is how a bot gets muted.
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find(
+              (c) => c.user.type === 'Bot' && c.body.includes(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
