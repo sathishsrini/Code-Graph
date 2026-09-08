@@ -683,3 +683,42 @@ rather than covering for each other.
    useless in equal measure, which is why it prints the span count beside it.
 4. **The UI is untested by a human.** Its payload is asserted; its usability is
    not, and no amount of test coverage substitutes for someone opening it.
+
+---
+
+# Phase 3 — depth (open-ended)
+
+| Task | Commit | State |
+|---|---|---|
+| **P3-T1 `co_changed` from git** | `PEND` | **done** |
+| P3-T2 hierarchical LLM summaries | — | blocked on OPEN-8 (provider not chosen) |
+| P3-T3 FTS5 + embeddings for seeding | — | not started |
+| P3-T4 Joern/Opengrep side-car | — | not started |
+| P3-T5 additional languages | — | not started |
+
+## P3-T1 — `co_changed`
+
+**Shipped.** Migration 008, `src/derive/co-changed.ts`, `co-changed` command
+(derive with no argument, query a file with one).
+
+**Why this one survived the v2 cull:** it is derived from *evidence* — two files
+appeared in N of the same commits, checkable by anyone with `git`. The other 20
+v2 association types were dropped because nothing produced them.
+
+**Verified on this repository's own history:** 47 commits, 125 files, 919 pairs.
+The top results are correct and recognisable —
+`implementation/RECORD.md ↔ src/cli.ts` (16 commits; every task adds a command
+and a record entry) and `package-lock.json ↔ package.json` (7).
+
+**Two exclusions that decide whether the table is usable.** Merge commits are
+excluded: a merge touches the union of both branches and pairs every file in one
+with every file in the other. Wide commits are excluded for the same reason at a
+smaller scale — a 400-file reformat contributes 79,800 pairs of pure noise. The
+cap is declared and adjustable, not tuned into a constant.
+
+**Does not do.** No renames followed (`--follow` is per-path and does not
+compose with `--name-only`), so a moved file starts a new history. Nothing
+joins this table in a traversal — it is a ranking signal and treating a high
+score as a dependency is exactly the mistake it must not enable. The corpus is
+not a git repo, so on that data the command correctly reports *unavailable*
+rather than zero pairs.

@@ -38,6 +38,7 @@ import { renderErrorReport } from "./query/errors-render.ts";
 import { analysePr, renderPrComment } from "./ci/pr-impact.ts";
 import { startUi } from "./ui/server.ts";
 import { generateTraffic, corpusTargets } from "./runtime/traffic.ts";
+import { deriveCoChanged, peersOf } from "./derive/co-changed.ts";
 import {
   runScipTypescript, runScipPython, documentAllowed,
 } from "./static/scip/runner.ts";
@@ -74,6 +75,7 @@ COMMANDS
   pr-impact           Read a unified diff on stdin, emit an impact comment (P2-T11)
   ui                  Serve the graph viewer on localhost (P2-T1..T5, T12)
   traffic             Drive requests at instrumented fixtures (P2-T7, OPEN-7)
+  co-changed [file]   Derive, or query, files that change together (P3-T1)
   help                Show this message
 
 OPTIONS
@@ -291,6 +293,9 @@ async function main(argv: string[]): Promise<number> {
 
     case "traffic":
       return await cmdTraffic(options);
+
+    case "co-changed":
+      return cmdCoChanged(options, positionals[1] ?? "");
 
     case "mcp":
       // Never returns: the transport owns the process until stdin closes.
@@ -781,6 +786,83 @@ function cmdContext(options: Options, seed: string): number {
       return 1;
     }
     throw e;
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * co-changed — derive the table, or query one file's peers (P3-T1).
+ *
+ * A RANKING SIGNAL, never a dependency. Two files that change together may
+ * share a real coupling or may both be touched by whoever bumps the version,
+ * and nothing in the engine treats a high score as evidence.
+ */
+function cmdCoChanged(options: Options, file: string): number {
+  const store = new FactStore(options.db);
+  try {
+    if (file) {
+      const peers = peersOf(store, file, options.limit ?? 10);
+      if (options.json) {
+        process.stdout.write(JSON.stringify(peers, null, 2) + BREAK);
+        return 0;
+      }
+      process.stdout.write(`FILES THAT CHANGE WITH ${file}` + BREAK + BREAK);
+      if (peers.length === 0) {
+        process.stdout.write(
+          "  none recorded. Derive first: node src/cli.ts co-changed" + BREAK,
+        );
+      }
+      for (const p of peers) {
+        process.stdout.write(
+          `  ${(p.support * 100).toFixed(0).padStart(3)}%  ` +
+          `${String(p.commits).padStart(3)} commits  ${p.file}` +
+          `${p.lastDate ? `   last ${p.lastDate}` : ""}` + BREAK,
+        );
+      }
+      process.stdout.write(
+        BREAK +
+        "  % is how often THIS file's commits also touched the peer. A ranking" + BREAK +
+        "  signal, not a dependency — nothing here says one needs the other." + BREAK,
+      );
+      return 0;
+    }
+
+    let config;
+    try {
+      config = loadConfig(options.config, { checkPaths: options.checkPaths });
+    } catch (e) {
+      if (e instanceof ConfigError) {
+        process.stderr.write(`config error: ${e.message}` + BREAK);
+        return 1;
+      }
+      throw e;
+    }
+
+    const repos = options.repo
+      ? config.repos.filter((r) => r.name === options.repo)
+      : config.repos;
+    const reports = repos.map((r) => deriveCoChanged(store, r.name, r.rootPath, {
+      maxCommits: options.limit,
+    }));
+
+    if (options.json) {
+      process.stdout.write(JSON.stringify(reports, null, 2) + BREAK);
+      return 0;
+    }
+    for (const r of reports) {
+      process.stdout.write(`${r.repo}` + BREAK);
+      if (r.unavailable) {
+        // "No history" and "not a git repo" are different facts.
+        process.stdout.write(`  unavailable: ${r.unavailable}` + BREAK);
+      } else {
+        process.stdout.write(
+          `  ${r.commitsRead} commits read, ${r.commitsSkipped} skipped as too wide, ` +
+          `${r.pairs} pair(s) stored` + BREAK,
+        );
+      }
+    }
+    return 0;
   } finally {
     store.close();
   }
