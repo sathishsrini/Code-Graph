@@ -24,6 +24,8 @@ import { readFastapiDump, toBootDump } from "./boot/fastapi.ts";
 import { buildFlow, renderFlow } from "./query/flow.ts";
 import { endpointFlow, RouteNotFound } from "./query/endpoint-flow.ts";
 import { renderEndpointFlow } from "./query/endpoint-flow-render.ts";
+import { impact, SeedNotFound } from "./query/impact.ts";
+import { renderImpact } from "./query/impact-render.ts";
 import {
   runScipTypescript, runScipPython, documentAllowed,
 } from "./static/scip/runner.ts";
@@ -49,6 +51,7 @@ COMMANDS
   flow                Ordered chain + call tree for one endpoint (P1-T12)
   scan                tree-sitter pass: throws, http, datastores, config (P1-T6)
   index               Index every repo into the fact store, incrementally (P1-T11)
+  impact <symbol>     What breaks if this changes — reverse closure (P1-T13)
   help                Show this message
 
 OPTIONS
@@ -64,6 +67,8 @@ OPTIONS
   --artifacts         flow: read a .scip file + boot dump instead of the store
   --no-remote         flow: stop at the service boundary, do not follow REQUESTS
   --externals         flow: list every boundary call instead of summarising
+  --fan-in <n>        impact: callers above which a symbol is a utility (default 10)
+  --limit <n>         impact: routes to list before trimming     (default 25)
   --force             index: re-run every derivation, ignoring the changed set
   --reset             db bootstrap: delete an existing database first
   --skip-path-check   config check: don't verify rootPath exists on disk
@@ -89,6 +94,8 @@ interface Options {
   fromArtifacts: boolean;
   noRemote: boolean;
   externals: boolean;
+  fanIn: number | undefined;
+  limit: number | undefined;
   checkPaths: boolean;
   json: boolean;
 }
@@ -114,6 +121,8 @@ async function main(argv: string[]): Promise<number> {
         artifacts: { type: "boolean", default: false },
         "no-remote": { type: "boolean", default: false },
         externals: { type: "boolean", default: false },
+        "fan-in": { type: "string" },
+        limit: { type: "string" },
         // node:util parseArgs has no "--no-x" negation, so this is stated
         // positively. The default remains "do check paths".
         "skip-path-check": { type: "boolean", default: false },
@@ -142,6 +151,8 @@ async function main(argv: string[]): Promise<number> {
     fromArtifacts: values.artifacts === true,
     noRemote: values["no-remote"] === true,
     externals: values.externals === true,
+    fanIn: values["fan-in"] ? Number(values["fan-in"]) : undefined,
+    limit: values.limit ? Number(values.limit) : undefined,
     checkPaths: values["skip-path-check"] !== true,
     json: values.json === true,
   };
@@ -190,6 +201,9 @@ async function main(argv: string[]): Promise<number> {
 
     case "index":
       return await cmdIndex(options);
+
+    case "impact":
+      return cmdImpact(options, positionals[1] ?? "");
 
     case "derive":
       if (sub !== "calls") {
@@ -539,6 +553,42 @@ function cmdFlowFromStore(options: Options): number {
           ? `  service "${options.repo}" has no routes in the store — run: node src/cli.ts index\n`
           : `  known routes:\n${e.candidates.map((c) => `    ${c.method} ${c.url}`).join("\n")}\n`),
       );
+      return 1;
+    }
+    throw e;
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * impact — what breaks if this symbol changes (P1-T13).
+ *
+ * The seed may be a verbatim SCIP symbol or a bare display name. An ambiguous
+ * name is refused rather than resolved: answering about the wrong `handler`
+ * with nothing in the output saying so is the failure this whole project is
+ * about.
+ */
+function cmdImpact(options: Options, seed: string): number {
+  if (!seed) {
+    process.stderr.write("impact requires a symbol: node src/cli.ts impact <name>\n");
+    return 2;
+  }
+  const store = new FactStore(options.db);
+  try {
+    const report = impact(store, seed, {
+      maxDepth: options.depth,
+      utilityFanIn: options.fanIn,
+      routeLimit: options.limit,
+    });
+    process.stdout.write(
+      options.json ? `${JSON.stringify(report, null, 2)}\n` : renderImpact(report),
+    );
+    return 0;
+  } catch (e) {
+    if (e instanceof SeedNotFound) {
+      process.stderr.write(`impact: ${e.message}\n`);
+      for (const m of e.matches) process.stderr.write(`  ${m.display}  ${m.key}\n`);
       return 1;
     }
     throw e;

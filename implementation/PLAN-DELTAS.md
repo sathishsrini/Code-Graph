@@ -589,3 +589,54 @@ into the one the code actually depends on:
 (`7 boundary call(s): npm:fastify@4.28.1×6, builtin:ecmascript×1`) with
 `--externals` to list them. The edges stay in the graph — `impact` reads them —
 but naming each one buried the four local calls that answer the question.
+
+---
+
+## D25 — three wrong answers `impact` gave before it gave a right one · corrected · P1-T13
+
+Same pattern as [D24](#d24): every one passed `tsc` and the suite, and every one
+was a *confident wrong answer* visible on the first corpus run.
+
+**1. A module symbol bridged unrelated routes.** `impact checkUserAuth` reported
+**23 routes**, including `/health`, `/ready`, `OPTIONS /*` and
+`POST /api/v1/auth/login` — none of which call it.
+
+A call inside an anonymous handler has no definition of its own, so SCIP
+attributes it to the module; the module is `HANDLES`-ed by *every* route in the
+file; and the reverse closure walked straight through it. That is the M7 defect
+in a third guise, and the most dangerous form yet, because the output is a
+security-relevant list that looks complete.
+
+The closure now refuses to expand out of a `namespace` symbol. The module is
+still reported as an affected *symbol* — the call is real — but it is no longer
+a path to 23 routes.
+
+**2. Stopping there would have lost a real route**, so the routes that genuinely
+run the seed are recovered from `route_chain` instead
+(`routesNamingSeed`): `POST /api/v1/mail/send` runs `checkUserAuth` inside an
+anonymous handler, and the chain names it exactly, at that route and nowhere
+else. **23 → 16**, which is the 15 routes `proxyToEngine` handles plus the mail
+route, and matches the source.
+
+**3. The merge ran after bucketing, then ranked by the wrong key.** Inserted
+after the confidence split, the chain-named route was counted in `totalRoutes`
+and present in no bucket — the sections summed to one less than the total.
+Moving it before the split exposed the second half: ranking two ways of reaching
+one route by **depth** made an `inferred` depth-1 inline row beat a `certain`
+depth-2 call chain, relabelling all 15 compiler-resolved routes as inferred.
+
+`isBetterEvidence` now ranks **confidence first, depth second**. Understating
+what is known is the mirror of overstating it, and this file's other rules exist
+to prevent exactly that in the opposite direction.
+
+**Also, R38's file-attributed dependencies.** Every `READS_CONFIG`, `READS` and
+`WRITES` edge in this corpus is owned by a **file** node, because the config
+reads and SQL literals all sit at module scope or inside anonymous handlers and
+`ownerSymbol` refuses to guess a function. So both dependency sections were
+empty for every symbol seed.
+
+They now consult the seed's owning file as well, and each shared node records
+`attributedTo: "symbol" | "file"` — rendered as `[file-scope]`. Reporting them
+as the symbol's own dependencies would overstate; reporting nothing hides a real
+coupling. `impact 51-integration/main.py` now answers OPEN-9's question directly:
+eight config nodes shared with `41-kri-engine`, and `postgres://?/mail_events`.
