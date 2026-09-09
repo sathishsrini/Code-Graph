@@ -49,16 +49,15 @@ type GenerateFn = (
   prompt: string, maxNewTokens: number, temperature: number, topP: number,
 ) => Promise<GenerateResult>;
 
-// The library's `TextGenerationPipeline.call` generic over
-// `string | Chat | string[] | Chat[]` makes the chat-array call path resolve
-// to a wide union instead of the single concrete shape we invoke. This seam
-// keeps the runtime contract explicit (chat in, chat output out) without
-// importing the library's intricate generics into this module.
-type TextGenHook = {
-  call(
-    texts: Message[], options: Record<string, number | string>,
-  ): Promise<Array<{ generated_text?: unknown }>>;
-};
+// The library's `TextGenerationPipeline` is the callable itself (its type is a
+// callback), not an object with a `.call`. Its generic over
+// `string | Chat | string[] | Chat[]` makes a chat-array call resolve to a
+// wide union instead of the single concrete shape we invoke. This seam keeps
+// the runtime contract explicit (chat in, chat output out) without importing
+// the library's intricate generics into this module.
+type TextGenHook = (
+  texts: Message[], options: Record<string, number | string>,
+) => Promise<Array<{ generated_text?: unknown }>>;
 
 /** The one end-user escape hatch for model choice, before config plumbing exists. */
 export function modelFromEnv(): { model: string; device?: LocalSummaryOptions["device"] } {
@@ -105,7 +104,7 @@ export class LocalSummaryProvider implements SummaryProvider {
     const generate: GenerateFn = async (prompt, maxNewTokens, temperature, topP) => {
       // Instruct models (Qwen2.5-Instruct) expect chat-message input; a bare
       // string would skip the template and leak chat tokens into output.
-      const output = await pipe.call(
+      const output = await pipe(
         [{ role: "user", content: prompt }],
         { max_new_tokens: maxNewTokens, temperature, top_p: topP },
       );
