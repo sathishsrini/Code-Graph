@@ -692,7 +692,7 @@ rather than covering for each other.
 |---|---|---|
 | **P3-T1 `co_changed` from git** | `a1d409b` | **done** |
 | P3-T2 hierarchical LLM summaries | — | blocked on OPEN-8 (provider not chosen) |
-| **P3-T3 FTS5 + embeddings for seeding** | `PEND` | **done — lexical only; OPEN-8 blocks vectors** |
+| **P3-T3 FTS5 + embeddings for seeding** | `d33c8cc` | **done — lexical only; OPEN-8 blocks vectors** |
 | P3-T4 Joern/Opengrep side-car | — | not started |
 | P3-T5 additional languages | — | not started |
 
