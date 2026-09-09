@@ -692,7 +692,7 @@ rather than covering for each other.
 |---|---|---|
 | **P3-T1 `co_changed` from git** | `a1d409b` | **done** |
 | P3-T2 hierarchical LLM summaries | — | blocked on OPEN-8 (provider not chosen) |
-| P3-T3 FTS5 + embeddings for seeding | — | not started |
+| **P3-T3 FTS5 + embeddings for seeding** | `PEND` | **done — lexical only; OPEN-8 blocks vectors** |
 | P3-T4 Joern/Opengrep side-car | — | not started |
 | P3-T5 additional languages | — | not started |
 
@@ -722,3 +722,54 @@ joins this table in a traversal — it is a ranking signal and treating a high
 score as a dependency is exactly the mistake it must not enable. The corpus is
 not a git repo, so on that data the command correctly reports *unavailable*
 rather than zero pairs.
+
+## P3-T3 — FTS5 + embeddings for seeding
+
+**Shipped.** Migration 009 (`search`, `search_meta`, `search_vectors`),
+`src/index/search.ts` (the index build), `src/query/workflow.ts` (stage-1 seed
+resolution), `src/retrieval/{rrf,vector-store}.ts`, and `search` / `search build`
+CLI commands (P3-T3; R43 stage 1, R66, R67).
+
+**What it is.** Stage-1 seeding only. A search result never becomes an answer;
+it becomes the *starting node* of one. A phrase is matched three ways against
+the FTS5 table (`name`, `qualified`, `signature`, `doc`, `path`): every token
+AND-ed, the phrase fused into one token (so `checkUserAuth`, one FTS5 token,
+matches "check user auth"), and that fused token as a prefix. An optional
+`EmbeddingProvider` additionally indexes rows into `search_vectors` (R67), and
+the lexical/vector signals are merged by RRF (`src/retrieval/rrf.ts`) — ranked,
+never score-averaged, so one signal's magnitude cannot bury another's. Neutral
+cosine (≤ 0) is excluded: "no evidence" is not corroboration.
+
+**The correction is the protocol.** The CLI prints the candidate list and the
+chosen seed; `--seed <key>` overrides it and every deterministic query below
+(flow / impact) then runs on the *corrected* seed, matching the stage-2+3 flow
+a person does in their head (R43 §3.2).
+
+**Verified.** 21 new tests (`tests/search.test.ts`), 437 total ✓. Premise proven
+in-suite: `checkUserAuth` indexes as one FTS5 token, so the spaced phrase hits
+only via the fused signal. End-to-end on the live store:
+`node src/cli.ts search "POST po"` seeds `POST /api/v1/po` and renders the full
+cross-service flow — and "user auth" seeds a Next.tsx Ctx `user` type (bm25
+exact-token win), which is corrected with one `--seed` flag.
+
+**Ports from `D:acilitator`, against plan §5's verdicts.**
+
+| Module | §5 said | What happened |
+|---|---|---|
+| `rrf.ts` | port as-is | Ported. `score` made **optional** — a source with no meaningful score should not invent one to take part, and fusion reads rank anyway. `retrievalCount` exposed, because "two signals agreed" is the number worth reading. |
+| `vector-store.ts` | port as-is | Ported behind a swap interface, per doc §B.6: brute-force cosine is exact and fine to 50–100k vectors; this corpus has ~900. No ANN dependency taken. |
+| `lexical.ts` | port the shape, fix deletion | **Not ported.** Both its bugs are structural: `content=''` without `content_rowid` makes the table contentless, so `snippet()` silently returns nothing; and `removeFile` issued `'deleteall'`, wiping the entire index to remove one file. A plain FTS5 table rebuilt wholesale has neither failure mode and costs milliseconds here. |
+
+**Rank only, never raw scores.** BM25 is negative, unbounded and
+corpus-dependent; cosine is bounded 0–1 and higher-is-better. Putting them on
+one scale means inventing a conversion, and the conversion is exactly where a
+fusion starts quietly preferring whichever source emits larger numbers.
+
+**Does not do.** No linguistic expansion: only the FTS5 tokenizer's own tokens
+are ever searched, so sibling spellings you must know. No `content_rowid`, no
+incremental updates — the table is rebuilt wholesale per run (a design note in
+the migration explains why; incremental FTS5 deletes silently go stale). Vectors
+are candidate-only: no ANN index or provider shipped — an
+`EmbeddingProvider` is the seam (`src/retrieval/vector-store.ts`), and with none
+configured the build honestly reports 0 vectors. Impact/flow stages of serving
+still describe `impact`/`endpoint-flow` reach; the search dials into them.

@@ -22,9 +22,9 @@ import { deriveCalls, dedupe, createFsSourceProvider } from "./derive/calls.ts";
 import { readBootDump, findRoute } from "./boot/dump.ts";
 import { readFastapiDump, toBootDump } from "./boot/fastapi.ts";
 import { buildFlow, renderFlow } from "./query/flow.ts";
-import { endpointFlow, RouteNotFound } from "./query/endpoint-flow.ts";
+import { endpointFlow, RouteNotFound, type EndpointFlow } from "./query/endpoint-flow.ts";
 import { renderEndpointFlow } from "./query/endpoint-flow-render.ts";
-import { impact, SeedNotFound } from "./query/impact.ts";
+import { impact, SeedNotFound, type ImpactReport } from "./query/impact.ts";
 import { renderImpact } from "./query/impact-render.ts";
 import { securityPath } from "./query/security.ts";
 import { renderSecurity, renderRouteSecurity } from "./query/security-render.ts";
@@ -45,6 +45,8 @@ import {
 import { scanRepo, renderScan } from "./static/treesitter/report.ts";
 import { indexRepo, linkCrossServiceRepos, type IndexReport } from "./index/pipeline.ts";
 import { renderIndexReport } from "./index/report.ts";
+import { buildSearchIndex } from "./index/search.ts";
+import { search, type FollowQuery, type SearchCandidate } from "./query/workflow.ts";
 
 const BREAK = String.fromCharCode(10);
 const DEFAULT_DB = ".codeintel/graph.db";
@@ -76,6 +78,8 @@ COMMANDS
   ui                  Serve the graph viewer on localhost (P2-T1..T5, T12)
   traffic             Drive requests at instrumented fixtures (P2-T7, OPEN-7)
   co-changed [file]   Derive, or query, files that change together (P3-T1)
+  search build        Rebuild the FTS5 seed index from the store (P3-T3)
+  search <phrase>     Fuzzy phrase → one seed, then its effects (P3-T3)
   help                Show this message
 
 OPTIONS
@@ -94,6 +98,7 @@ OPTIONS
   --mermaid           flow: emit a Mermaid diagram instead of a tree (P2-T6)
   --fan-in <n>        impact: callers above which a symbol is a utility (default 10)
   --limit <n>         impact: routes to list before trimming     (default 25)
+  --seed <key>        search: explicit seed node key, correcting stage 1 (P3-T3)
   --budget <n>        context: token budget                      (default 4000)
   --no-source         context: omit tier-1 raw source
   --measure           context: also report the R71 token delta vs dumping files
@@ -109,8 +114,9 @@ OPTIONS
   --json              Machine-readable output
 
 STATUS
-  Phase 1 in progress. See plans/code-intelligence-engine-plan-v2.md for the
-  plan and implementation/RECORD.md for what has actually shipped.
+  Phases 0-2 complete; Phase 3 in progress. The plan is
+  plans/code-intelligence-engine-plan-v2.md; implementation/RECORD.md is what
+  actually shipped, and implementation/PLAN-DELTAS.md is where they differ.
 `;
 
 interface Options {
@@ -131,6 +137,7 @@ interface Options {
   mermaid: boolean;
   fanIn: number | undefined;
   limit: number | undefined;
+  seed: string;
   anomaly: string;
   budget: number | undefined;
   noSource: boolean;
@@ -167,6 +174,7 @@ async function main(argv: string[]): Promise<number> {
         mermaid: { type: "boolean", default: false },
         "fan-in": { type: "string" },
         limit: { type: "string" },
+        seed: { type: "string" },
         anomaly: { type: "string" },
         budget: { type: "string" },
         "no-source": { type: "boolean", default: false },
@@ -206,6 +214,7 @@ async function main(argv: string[]): Promise<number> {
     mermaid: values.mermaid === true,
     fanIn: values["fan-in"] ? Number(values["fan-in"]) : undefined,
     limit: values.limit ? Number(values.limit) : undefined,
+    seed: values.seed ?? "",
     anomaly: values.anomaly ?? "tenant",
     budget: values.budget ? Number(values.budget) : undefined,
     noSource: values["no-source"] === true,
@@ -296,6 +305,10 @@ async function main(argv: string[]): Promise<number> {
 
     case "co-changed":
       return cmdCoChanged(options, positionals[1] ?? "");
+
+    case "search":
+      if (sub === "build") return cmdSearchBuild(options);
+      return cmdSearch(options, positionals.slice(1).join(" "));
 
     case "mcp":
       // Never returns: the transport owns the process until stdin closes.
@@ -695,14 +708,150 @@ function cmdImpact(options: Options, seed: string): number {
       return 1;
     }
     throw e;
+} finally {
+    store.close();
+  }
+}
+
+/**
+ * search build — rebuild the FTS5 seed index from the live `nodes` snapshot.
+ *
+ * Idempotent and wholesale: rows mirror the store at build time, so the output
+ * is a deterministic function of the store (P3-T3, R43).
+ */
+function cmdSearchBuild(options: Options): number {
+  const store = new FactStore(options.db);
+  try {
+    const report = buildSearchIndex(store);
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    } else {
+      process.stdout.write(
+        `seed index rebuilt\n` +
+        `  rows     ${report.rows}\n` +
+        `  vectors  ${report.vectors}${report.provider ? `  (provider: ${report.provider})` : ""}\n` +
+        `  built    ${report.rebuiltAt}\n`,
+      );
+    }
+    return 0;
+  } catch (e) {
+    process.stderr.write(`search build: ${(e as Error).message}\n`);
+    return 1;
   } finally {
     store.close();
   }
 }
 
 /**
+ * search — stage-1 fuzzy phrase → seed, then the deterministic stage-2 query.
+ *
+ * Stage 1 ranks candidates via RRF over lexical aspects (+ vectors when the
+ * index was built with a provider); it never decides the answer itself. The
+ * chosen seed is shown, with `--seed <key>` as the written correction path,
+ * and the follow-on query is always the deterministic engine.
+ */
+function cmdSearch(options: Options, phrase: string): number {
+  if (phrase === "") {
+    process.stderr.write(
+      "search requires a phrase: node src/cli.ts search <phrase>\n" +
+      "  (re)build the seed index first: node src/cli.ts search build\n",
+    );
+    return 2;
+  }
 
- * security — the coverage matrix and R40's anomaly query (P1-T14).
+  const store = new FactStore(options.db);
+  try {
+    const wf = search(store, phrase, { correctedSeed: options.seed || undefined });
+
+    if (wf.notBuilt) {
+      process.stderr.write(`search: ${wf.reason}\n`);
+      return 1;
+    }
+    if (!wf.chosen) {
+      if (wf.candidates.length > 0) renderCandidates(wf.candidates, process.stderr);
+      process.stderr.write(`search: ${wf.reason}\n`);
+      return 1;
+    }
+
+    if (options.json) {
+      const payload: Record<string, unknown> = { search: wf };
+      if (wf.follow) {
+        try {
+          payload.follow = runFollow(store, wf.follow, options);
+        } catch (e) {
+          if (e instanceof RouteNotFound || e instanceof SeedNotFound) {
+            payload.follow_error = (e as Error).message;
+          } else {
+            throw e;
+          }
+        }
+      }
+      process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+      return 0;
+    }
+
+    renderCandidates(wf.candidates, process.stdout);
+    const chosen = wf.chosen;
+    process.stdout.write(
+      `seeded → ${chosen.display}  (${chosen.where})\n` +
+      `  from    ${chosen.sources.join(", ")}\n` +
+      `  follow  ${followLabel(wf.follow)}\n\n`,
+    );
+
+    if (wf.follow) {
+      try {
+        const out = runFollow(store, wf.follow, options);
+        process.stdout.write(renderFollow(wf.follow, out, options));
+      } catch (e) {
+        if (e instanceof RouteNotFound || e instanceof SeedNotFound) {
+          process.stderr.write(`search: ${(e as Error).message}\n`);
+          return 1;
+        }
+        throw e;
+      }
+    }
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
+function renderCandidates(candidates: SearchCandidate[], sink: NodeJS.WritableStream): void {
+  if (candidates.length === 0) return;
+  sink.write("candidates:\n");
+  for (const c of candidates) {
+    sink.write(`  ${c.nodeKey.padEnd(52)} ${c.kind.padEnd(7)} ${c.sources.join(",")}\n`);
+  }
+}
+
+function followLabel(follow: FollowQuery | null): string {
+  if (!follow) return "—";
+  if (follow.query === "endpoint_flow") return `endpoint_flow ${follow.service} ${follow.method} ${follow.url}`;
+  return `impact ${follow.seed}`;
+}
+
+function runFollow(store: FactStore, follow: FollowQuery, options: Options): EndpointFlow | ImpactReport {
+  if (follow.query === "endpoint_flow") {
+    return endpointFlow(store, follow.service, follow.method, follow.url, {
+      maxDepth: options.depth,
+      followRemote: !options.noRemote,
+    });
+  }
+  return impact(store, follow.seed, {
+    maxDepth: options.depth,
+    utilityFanIn: options.fanIn,
+    routeLimit: options.limit,
+  });
+}
+
+function renderFollow(follow: FollowQuery, out: EndpointFlow | ImpactReport, options: Options): string {
+  if (follow.query === "endpoint_flow") {
+    return renderEndpointFlow(out as EndpointFlow, "", { externals: options.externals });
+  }
+  return renderImpact(out as ImpactReport);
+}
+
+/**
  *
  * With --method/--path it prints one route's ordered security chain instead,
  * which is the doc's highest value-per-hour view.
