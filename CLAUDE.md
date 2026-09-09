@@ -70,6 +70,10 @@ npm run typecheck           # tsc --noEmit
 npm test                    # node --test tests/
 node src/cli.ts --help      # CLI (Node runs .ts natively — no flag, no build)
 npm run audit:tokens        # npx claude-token-optimizer audit --json
+
+# Summaries run on a LOCAL model (OPEN-8). First generation downloads weights.
+node src/cli.ts summaries generate --scope service --seed <svc>   # bottom-up, cache-first
+node src/cli.ts summaries read <nodeKey> --kind <function|module|service>
 ```
 
 Full command set and engine workflow: `.claude/QUICK_START.md`

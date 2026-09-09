@@ -116,8 +116,18 @@ describe("phase 1 schema", () => {
     const store = new FactStore(join(dir, "absent.db"));
     try {
       const names = tableNames(store);
-      assert.ok(names.has("spans"), "spans has a producer: src/runtime/otlp.ts");
-      assert.ok(!names.has("summaries"), "summaries has no producer until P3-T2");
+      // Each of these names the module that fills it. A table appearing here
+      // without one is the failure this asserts against.
+      const producers: Record<string, string> = {
+        spans: "src/runtime/otlp.ts",
+        summaries: "src/llm/summaries.ts",
+        function_cfg: "src/static/cfg-ingest.ts",
+        co_changed: "src/derive/co-changed.ts",
+        search_vectors: "src/index/search.ts",
+      };
+      for (const [table, producer] of Object.entries(producers)) {
+        assert.ok(names.has(table), `${table} ships with its producer (${producer})`);
+      }
     } finally { store.close(); }
   });
 

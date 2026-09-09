@@ -36,5 +36,8 @@
     "tree-sitter-wasms": "^0.1.13",
     "typescript": "^5.7.0",
     "web-tree-sitter": "^0.25.10"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.2.0"
   }
 }

@@ -44,6 +44,8 @@ import {
 } from "./static/scip/runner.ts";
 import { scanRepo, renderScan } from "./static/treesitter/report.ts";
 import { indexRepo, linkCrossServiceRepos, type IndexReport } from "./index/pipeline.ts";
+import { readSummary } from "./llm/summaries.ts";
+import { planGeneration, generateFromPlan, type GenerationReport } from "./llm/orchestrate.ts";
 import { renderIndexReport } from "./index/report.ts";
 import { buildSearchIndex } from "./index/search.ts";
 import { search, type FollowQuery, type SearchCandidate } from "./query/workflow.ts";
@@ -80,6 +82,8 @@ COMMANDS
   co-changed [file]   Derive, or query, files that change together (P3-T1)
   search build        Rebuild the FTS5 seed index from the store (P3-T3)
   search <phrase>     Fuzzy phrase → one seed, then its effects (P3-T3)
+  summaries generate Bottom-up summaries over a LOCAL model, cache-first (P3-T2)
+  summaries read <k>  Print a generated summary (never loads the model)
   help                Show this message
 
 OPTIONS
@@ -138,6 +142,8 @@ interface Options {
   fanIn: number | undefined;
   limit: number | undefined;
   seed: string;
+  scope: string;
+  kind: string;
   anomaly: string;
   budget: number | undefined;
   noSource: boolean;
@@ -175,6 +181,8 @@ async function main(argv: string[]): Promise<number> {
         "fan-in": { type: "string" },
         limit: { type: "string" },
         seed: { type: "string" },
+        scope: { type: "string" },
+        kind: { type: "string" },
         anomaly: { type: "string" },
         budget: { type: "string" },
         "no-source": { type: "boolean", default: false },
@@ -215,6 +223,8 @@ async function main(argv: string[]): Promise<number> {
     fanIn: values["fan-in"] ? Number(values["fan-in"]) : undefined,
     limit: values.limit ? Number(values.limit) : undefined,
     seed: values.seed ?? "",
+    scope: values.scope ?? "",
+    kind: values.kind ?? "",
     anomaly: values.anomaly ?? "tenant",
     budget: values.budget ? Number(values.budget) : undefined,
     noSource: values["no-source"] === true,
@@ -321,6 +331,14 @@ async function main(argv: string[]): Promise<number> {
         return 2;
       }
       return cmdDeriveCalls(options);
+
+    case "summaries":
+      if (sub === "generate") return await cmdSummariesGenerate(options, positionals.slice(2));
+      if (sub === "read") return cmdSummariesRead(options, positionals[2] ?? "");
+      process.stderr.write(`unknown subcommand: summaries ${sub}\n`);
+      process.stderr.write(`  summaries generate [--scope function|module|service|all] [--seed <key|service>] [--json]\n`);
+      process.stderr.write(`  summaries read <nodeKey> [--kind function|module|service] [--json]\n`);
+      return 2;
 
     default:
       process.stderr.write(`unknown command: ${command}\n\n${USAGE}`);
@@ -1530,6 +1548,93 @@ function cmdDeriveCalls(options: Options): number {
   }
 
   return 0;
+}
+
+// ---------------------------------------------------------------------------
+// summaries — P3-T2. Local-model generation, cache-first, bottom-up. Reading
+// never loads a model; generation only loads it on a real cache miss.
+// ---------------------------------------------------------------------------
+
+async function cmdSummariesGenerate(options: Options, args: string[]): Promise<number> {
+  const scopeArg = options.scope as string;
+  const seed = options.seed ?? "";
+  const scopes = ["function", "module", "service", "all"] as const;
+  if (!scopes.includes(scopeArg as (typeof scopes)[number])) {
+    process.stderr.write(`--scope must be one of: ${scopes.join(", ")}\n`);
+    return 2;
+  }
+  const scope = scopeArg as (typeof scopes)[number];
+
+  const store = new FactStore(options.db);
+  try {
+    const plan = planGeneration(store, scope, seed);
+    const report = await generateFromPlan(store, plan, null);
+    if (report.needsProvider) {
+      process.stderr.write(
+        `${report.generated.length} cached, ${report.skipped.length} need generation.\n` +
+        `Loading local model (first run downloads weights and can take minutes on CPU)...\n`,
+      );
+      const provider = await import("./llm/local.ts").then((m) => m.localSummaryProvider());
+      const full = await generateFromPlan(store, plan, provider);
+      if (options.json) {
+        process.stdout.write(JSON.stringify(full, null, 2) + "\n");
+      } else {
+        renderGenerateReport(full);
+      }
+      return 0;
+    }
+    if (options.json) {
+      process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    } else {
+      renderGenerateReport(report);
+    }
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
+function renderGenerateReport(report: GenerationReport): void {
+  for (const s of report.skipped) {
+    process.stdout.write(`skip : ${s.nodeKey} — ${s.reason}\n`);
+  }
+  for (const g of report.generated) {
+    process.stdout.write(`+ ${g.kind.padEnd(8)} ${g.nodeKey}  (${g.tokensIn ?? "?"}→${g.tokensOut ?? "?"} tokens)\n`);
+  }
+  process.stdout.write(
+    `${report.generated.length} generated, ${report.hitCache} from cache` +
+    `${report.provider ? ` via ${report.provider}` : ""}\n`,
+  );
+}
+
+function cmdSummariesRead(options: Options, nodeKey: string): number {
+  if (!nodeKey) {
+    process.stderr.write(`summaries read <nodeKey> — e.g. a symbol key or repo name\n`);
+    return 2;
+  }
+  const store = new FactStore(options.db);
+  try {
+    const kind = (options.kind || "function") as "function" | "module" | "service";
+    const summary = readSummary(store, nodeKey, kind);
+    if (!summary) {
+      process.stderr.write(`no ${kind} summary for "${nodeKey}". Generate it first:\n`);
+      process.stderr.write(`  summaries generate --scope ${kind} --seed <key>\n`);
+      return 1;
+    }
+    if (options.json) {
+      process.stdout.write(JSON.stringify(summary, null, 2) + "\n");
+    } else {
+      const inputSha = summary.inputSha256.slice(0, 12);
+      process.stdout.write(
+        `=== ${summary.kind} ${summary.nodeKey}\n` +
+        `input ${inputSha} · generated ${summary.generatedAt}\n` +
+        `---\n${summary.summary}\n`,
+      );
+    }
+    return 0;
+  } finally {
+    store.close();
+  }
 }
 
 // Top-level await: the tree-sitter grammars load asynchronously, so `main` is
