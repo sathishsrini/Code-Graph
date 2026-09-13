@@ -37,7 +37,8 @@
     background: var(--panel); border-right: 1px solid var(--border);
     overflow-y: auto; padding: 12px;
   }
-  #inspector { border-right: none; border-left: 1px solid var(--border); }
+  #inspector { border-right: none; border-left: 1px solid var(--border);
+               overflow-x: auto; }
   main { position: relative; overflow: hidden; }
   h1 { font-size: 13px; margin: 0 0 10px; letter-spacing: .04em; }
   h2 { font-size: 11px; color: var(--dim); margin: 16px 0 6px;
@@ -65,6 +66,16 @@
   .e.observed { stroke: var(--observed); stroke-width: 3; }
   .e.inferred { stroke: var(--inferred); stroke-dasharray: 6 4; }
   .e.unresolved { stroke: var(--unresolved); stroke-dasharray: 2 3; }
+  /* Halo, so a label crossing its own line stays readable without a backing
+     rectangle that would hide whatever the line passes over. */
+  .elabel { font-size: 9px; fill: var(--dim); pointer-events: none;
+            paint-order: stroke; stroke: var(--bg); stroke-width: 3px;
+            stroke-linejoin: round; }
+  /* Focus mode: selecting a node fades everything it does not touch. Fades
+     rather than hides — a neighbourhood shown alone reads as the whole graph. */
+  #viewport.focus .n:not(.on), #viewport.focus .e:not(.on),
+  #viewport.focus .elabel:not(.on) { opacity: .12; }
+  #viewport .n, #viewport .e, #viewport .elabel { transition: opacity .12s; }
   #legend { position: absolute; right: 10px; bottom: 10px; background: var(--panel);
             border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
             font-size: 10px; line-height: 1.7; max-width: 300px; }
@@ -78,7 +89,11 @@
   .cfg.unknown { border-color: var(--unknown); }
   /* The decision-structure flowchart. Shape carries the construct, colour the
      outcome — the same two-axis rule the main graph obeys. */
-  #flow { width: 100%; background: #0d111788; border: 1px solid var(--border);
+  /* `width/height: 100%` from the `svg` rule above applies here too, and it is
+     what stretched this to the height of the panel. Sized explicitly instead,
+     in drawFlowchart, so the diagram keeps its own proportions. */
+  #flow { width: auto; height: auto; cursor: default;
+          background: #0d111788; border: 1px solid var(--border);
           border-radius: 6px; margin: 6px 0; display: block; }
   #flow .b { fill: #ffffff08; stroke: #8b949e; stroke-width: 1.4; }
   #flow .b.decision { fill: #d2992218; stroke: var(--inferred); }
@@ -141,6 +156,21 @@ const SHAPE = {
 };
 const shapeOf = (kind) => SHAPE[kind] ?? SHAPE.symbol;
 
+/**
+ * Edge types worth a word on the canvas.
+ *
+ * `CALLS` is the assumed relationship and `CHAIN`/`CHECKS`/`HANDLES` are
+ * already legible from the boxes they join, so labelling those would put text
+ * on nearly every line and bury the four that change what the edge means: a
+ * network hop, a write, a read, a throw.
+ */
+const EDGE_TEXT = {
+  REQUESTS: "http", WRITES: "writes", READS: "reads",
+  THROWS: "throws", READS_CONFIG: "config",
+};
+const LABELLED_EDGE = new Set(Object.keys(EDGE_TEXT));
+const CONFIDENCES = ["certain", "observed", "inferred", "unresolved"];
+
 async function boot() {
   const routes = await (await fetch("/api/routes")).json();
   renderRoutes(routes);
@@ -199,10 +229,14 @@ async function load(route) {
 // ---------------------------------------------------------------------------
 async function draw() {
   const byService = new Map();
+  // Which lane each node landed in. Needed to put ELK's edge geometry back into
+  // the right coordinate space — see the note above the route collection below.
+  const laneOf = new Map();
   for (const n of payload.nodes) {
     const key = n.service ?? "(external)";
     if (!byService.has(key)) byService.set(key, []);
     byService.get(key).push(n);
+    laneOf.set(n.id, `lane:${key}`);
   }
 
   const graph = {
@@ -213,6 +247,12 @@ async function draw() {
       "elk.spacing.nodeNode": "26",
       "elk.layered.spacing.nodeNodeBetweenLayers": "70",
       "elk.hierarchyHandling": "INCLUDE_CHILDREN",
+      // Ask for real routes. Without this the edges below have no bend points
+      // to follow and every long edge cuts straight through whatever is
+      // between its endpoints.
+      "elk.edgeRouting": "POLYLINE",
+      "elk.spacing.edgeNode": "18",
+      "elk.layered.spacing.edgeNodeBetweenLayers": "18",
     },
     children: [...byService.entries()].map(([service, nodes]) => ({
       id: `lane:${service}`,
@@ -230,9 +270,15 @@ async function draw() {
   const laid = await elk.layout(graph);
   const vp = $("viewport");
   vp.innerHTML = "";
+  vp.classList.remove("focus");
+  selected = null;
+  // Before the edges, which reference the markers by id.
+  ensureDefs();
 
   const positions = new Map();
+  const laneAt = new Map();
   for (const lane of laid.children ?? []) {
+    laneAt.set(lane.id, { x: lane.x, y: lane.y });
     const g = svg("g");
     g.append(rect(lane.x, lane.y, lane.width, lane.height, "lane"));
     const label = svg("text", {
@@ -249,14 +295,51 @@ async function draw() {
     }
   }
 
+  // ELK reports an edge's geometry relative to the LOWEST COMMON ANCESTOR of
+  // its endpoints: the lane when both boxes sit inside one, the root when the
+  // edge crosses lanes. Under `INCLUDE_CHILDREN` it still *files* every edge at
+  // the root, so the ancestor has to be worked out from the endpoints — taking
+  // the container it was found in gets same-lane edges wrong by a whole lane
+  // offset (measured: up to 987px adrift on a three-lane route).
+  //
+  // Ignoring all of this is what the canvas did before: it built this layout,
+  // discarded the routes, and drew a bezier from source-right to target-left,
+  // which is why long edges swept past the lanes instead of following them.
+  const routed = new Map();
+  const collect = (container, off) => {
+    for (const e of container.edges ?? []) {
+      const lane = laneOf.get(e.sources[0]);
+      const sameLane = lane === laneOf.get(e.targets[0]);
+      routed.set(e.id, { e, off: sameLane ? laneAt.get(lane) ?? off : off });
+    }
+    for (const child of container.children ?? []) {
+      collect(child, laneAt.get(child.id) ?? off);
+    }
+  };
+  collect(laid, { x: 0, y: 0 });
+
   for (const e of payload.edges) {
     const a = positions.get(e.source), b = positions.get(e.target);
     if (!a || !b) continue;
+
+    const hit = routed.get(e.id);
+    const off = hit?.off ?? { x: 0, y: 0 };
+    const section = hit?.e.sections?.[0];
+    const points = section
+      ? [section.startPoint, ...(section.bendPoints ?? []), section.endPoint]
+        .map((p) => ({ x: p.x + off.x, y: p.y + off.y }))
+      // No route came back: a straight segment between the two boxes is at
+      // least honest about being unrouted, where a fabricated curve is not.
+      : [{ x: a.x + a.w, y: a.y + a.h / 2 }, { x: b.x, y: b.y + b.h / 2 }];
+
     const path = svg("path", {
       class: `e ${e.confidence}`,
-      d: `M ${a.x + a.w} ${a.y + a.h / 2} C ${a.x + a.w + 40} ${a.y + a.h / 2},` +
-         ` ${b.x - 40} ${b.y + b.h / 2}, ${b.x} ${b.y + b.h / 2}`,
-      "marker-end": "url(#arrow)",
+      "data-edge": e.id,
+      "data-source": e.source,
+      "data-target": e.target,
+      d: points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" "),
+      "stroke-linejoin": "round",
+      "marker-end": `url(#arrow-${e.confidence})`,
     });
     const title = svg("title");
     // Both axes in the tooltip, named, so hovering teaches the distinction.
@@ -264,6 +347,19 @@ async function draw() {
       `${e.type}\nedge confidence: ${e.confidence}\npath confidence: ${e.pathConfidence}`;
     path.append(title);
     vp.append(path);
+
+    // Label only the relationships a reader cannot infer from position and
+    // shape. CALLS is the assumed edge and HANDLES is obvious from the route
+    // box it leaves — labelling those adds noise, not information.
+    if (LABELLED_EDGE.has(e.type)) {
+      const mid = midpointOf(points);
+      const t = svg("text", {
+        class: "elabel", x: mid.x, y: mid.y - 5, "text-anchor": "middle",
+        "data-edge": e.id, "data-source": e.source, "data-target": e.target,
+      });
+      t.textContent = EDGE_TEXT[e.type] ?? e.type;
+      vp.append(t);
+    }
   }
 
   for (const n of payload.nodes) {
@@ -278,8 +374,12 @@ async function draw() {
     if (n.chain?.channel === "inline") box.setAttribute("stroke-dasharray", "5 3");
     g.append(box);
 
+    // The chain's position, inline. "Ordered middleware/auth chain" is one of
+    // the four questions this tool answers, and before this the order was only
+    // implied by where the layout happened to put the box.
     const t = svg("text", { x: p.x + 10, y: p.y + p.h / 2 + 4 });
-    t.textContent = clip(n.label, Math.floor((p.w - 20) / 6.6));
+    const prefix = n.chain ? `${n.chain.position}. ` : "";
+    t.textContent = prefix + clip(n.label, Math.floor((p.w - 20) / 6.6) - prefix.length);
     g.append(t);
 
     if (n.chain?.checkKind) {
@@ -296,8 +396,36 @@ async function draw() {
     vp.append(g);
   }
 
-  ensureDefs();
   applyView();
+}
+
+/**
+ * Focus the selected node's immediate neighbourhood.
+ *
+ * On a route with thirty nodes the question is never "what is on this graph",
+ * it is "what does THIS touch" — and that answer was previously only in the
+ * inspector's edge list, in text, next to a picture that showed everything at
+ * once. Dimming puts the same answer on the canvas without removing the
+ * context that makes it mean something.
+ */
+function focusOn(nodeId) {
+  const vp = $("viewport");
+  for (const el of vp.querySelectorAll(".on")) el.classList.remove("on");
+  if (!nodeId) { vp.classList.remove("focus"); return; }
+
+  const near = new Set([nodeId]);
+  for (const e of payload.edges) {
+    if (e.source === nodeId) near.add(e.target);
+    else if (e.target === nodeId) near.add(e.source);
+  }
+  for (const el of vp.querySelectorAll(".n")) {
+    el.classList.toggle("on", near.has(el.dataset.id));
+  }
+  for (const el of vp.querySelectorAll("[data-edge]")) {
+    el.classList.toggle("on",
+      el.dataset.source === nodeId || el.dataset.target === nodeId);
+  }
+  vp.classList.add("focus");
 }
 
 /**
@@ -322,10 +450,15 @@ function strokeFor(n, fallback) {
 // Inspector (P2-T3) and the branch view (P2-T12)
 // ---------------------------------------------------------------------------
 function inspect(n) {
-  selected = n.id;
+  // Clicking the selected node again clears the focus, so the whole graph is
+  // always one click away rather than needing the route re-loaded.
+  const same = selected === n.id;
+  selected = same ? null : n.id;
   for (const el of document.querySelectorAll(".n")) {
-    el.classList.toggle("sel", el.dataset.id === n.id);
+    el.classList.toggle("sel", el.dataset.id === selected);
   }
+  focusOn(selected);
+  if (same) { inspectRoute(); return; }
   const out = [`<h1>${escapeHtml(n.label)}</h1>`,
     `<p class="k">${escapeHtml(n.kind)}</p>`];
   if (n.file) out.push(`<p class="k">${escapeHtml(n.file)}${n.line ? `:${n.line}` : ""}</p>`);
@@ -451,8 +584,17 @@ async function drawFlowchart(cfg) {
   const pad = 8;
   const w = (laid.width ?? 300) + pad * 2;
   const h = (laid.height ?? 200) + pad * 2;
+
+  // Fit the panel's width, but never below 0.7: at 9px type that is where the
+  // condition text stops being readable, and a diagram nobody can read is
+  // worse than one the panel has to scroll sideways for.
+  // clientWidth includes the panel's padding; the content box is 24px narrower.
+  const avail = Math.max((el.parentElement?.clientWidth ?? 320) - 26, 180);
+  const scale = Math.max(0.7, Math.min(1, avail / w));
   el.setAttribute("viewBox", `${-pad} ${-pad} ${w} ${h}`);
-  el.setAttribute("height", String(Math.min(h, 420)));
+  el.setAttribute("preserveAspectRatio", "xMidYMin meet");
+  el.setAttribute("width", String(Math.round(w * scale)));
+  el.setAttribute("height", String(Math.round(h * scale)));
   el.innerHTML = "";
 
   // Self-contained marker: this is a different <svg> from the main canvas and
@@ -601,7 +743,8 @@ function renderLegend() {
   $("legend").innerHTML =
     block("confidence", l.confidence) + '<div class="sep"></div>' +
     block("outcome", l.outcome) + '<div class="sep"></div>' +
-    block("security", l.security);
+    block("security", l.security) + '<div class="sep"></div>' +
+    '<div class="row">click a node to focus what it touches · click it again to clear</div>';
 }
 
 // ---------------------------------------------------------------------------
@@ -641,15 +784,55 @@ function svg(tag, attrs = {}) {
 function rect(x, y, w, h, cls) {
   return svg("rect", { x, y, width: w, height: h, class: cls, rx: 6 });
 }
+/**
+ * Half-way along a polyline by LENGTH, not by vertex count.
+ *
+ * Picking the middle vertex puts the label on an endpoint whenever the route
+ * has an even number of points — which for a two-point edge means writing
+ * "writes" on top of the datastore box it points at.
+ */
+function midpointOf(points) {
+  const seg = [];
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    const d = Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+    seg.push(d);
+    total += d;
+  }
+  let walked = 0;
+  for (let i = 0; i < seg.length; i += 1) {
+    if (walked + seg[i] >= total / 2) {
+      const t = seg[i] === 0 ? 0 : (total / 2 - walked) / seg[i];
+      return {
+        x: points[i].x + (points[i + 1].x - points[i].x) * t,
+        y: points[i].y + (points[i + 1].y - points[i].y) * t,
+      };
+    }
+    walked += seg[i];
+  }
+  return points[0];
+}
+/**
+ * One arrowhead per confidence.
+ *
+ * A single grey marker put a neutral tip on every line, so a red `unresolved`
+ * edge appeared to change meaning at its end — the confidence axis dropping out
+ * exactly where the eye lands. The fill is the same custom property the stroke
+ * uses, so the two cannot drift apart.
+ */
 function ensureDefs() {
   if ($("canvas").querySelector("defs")) return;
   const defs = svg("defs");
-  const marker = svg("marker", {
-    id: "arrow", viewBox: "0 0 10 10", refX: "9", refY: "5",
-    markerWidth: "6", markerHeight: "6", orient: "auto-start-reverse",
-  });
-  marker.append(svg("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "#8b949e" }));
-  defs.append(marker);
+  for (const confidence of CONFIDENCES) {
+    const marker = svg("marker", {
+      id: `arrow-${confidence}`, viewBox: "0 0 10 10", refX: "9", refY: "5",
+      markerWidth: "6", markerHeight: "6", orient: "auto-start-reverse",
+    });
+    marker.append(svg("path", {
+      d: "M 0 0 L 10 5 L 0 10 z", fill: `var(--${confidence})`,
+    }));
+    defs.append(marker);
+  }
   $("canvas").prepend(defs);
 }
 const clip = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);

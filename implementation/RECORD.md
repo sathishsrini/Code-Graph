@@ -857,3 +857,70 @@ decisions, exits and handlers are nodes, and a branch arm with no nested
 construct draws its arrow straight to the merge point. The corpus contains no
 loops at all, so `loop_back` is exercised only by direct verification, not by
 corpus data.
+
+---
+
+## Canvas edge routing, and four things the picture was not saying
+
+**The lines were wrong, and they were wrong for a specific reason.** `draw()`
+built a full elkjs layout, received routed edge geometry back, discarded it,
+and drew a cubic bezier from the source box's right edge to the target box's
+left edge. On a single-lane graph that is merely ugly; across three lanes it
+sends edges sweeping past the lane boundary to the far side of the viewport,
+which is what the screenshot showed.
+
+Using elk's routes needs one fact that is easy to get wrong: **elk reports an
+edge's geometry relative to the lowest common ancestor of its endpoints** — the
+lane when both boxes sit inside one, the root when the edge crosses lanes —
+while under `hierarchyHandling=INCLUDE_CHILDREN` it still *files* every edge at
+the root. So the offset cannot be read off the container the edge was found in;
+it has to be derived from where the two endpoints live. Measured against the
+live `/api/graph` payload for `GET /api/v1/bill` (20 nodes, 24 edges, 3 lanes):
+with the container-derived offset, endpoints land up to **987px** from the box
+they claim to touch; with the endpoint-derived one, 22 of 24 are exact and the
+worst is **12.8px**, which is port spacing. `elk.edgeRouting=POLYLINE` is now
+requested explicitly — without it there are no bend points to follow.
+
+An edge with no route falls back to a straight segment rather than a bezier. A
+curve that was never computed is a drawing that asserts a path nobody checked.
+
+**Four additions, each answering a question the canvas previously left to the
+inspector's text.**
+
+*Arrowheads carry confidence.* There was one grey `#arrow` marker on every
+edge, so a red dotted `unresolved` line ended in a neutral tip — the confidence
+axis dropping out exactly where the eye lands. There is now one marker per
+confidence, filled from the same custom property the stroke uses so the two
+cannot drift apart.
+
+*Edges that change meaning are labelled.* `REQUESTS`, `WRITES`, `READS`,
+`THROWS` and `READS_CONFIG` get a word at the polyline's midpoint — by arc
+length, not by vertex index, which on a two-point edge would have written the
+label on top of the node it points at. `CALLS`, `CHAIN` and `CHECKS` are
+deliberately unlabelled: `CALLS` is the assumed relationship and the other two
+are already legible from the boxes they join, so labelling them would put text
+on nearly every line and bury the four that matter.
+
+*Clicking a node focuses what it touches.* Its neighbours stay lit and
+everything else drops to 12% opacity; clicking it again clears. Fades rather
+than hides — a neighbourhood shown alone reads as the whole graph. This is the
+same answer the inspector's edge list already gave in words, put on the canvas
+next to the picture it describes.
+
+*Chain steps show their position.* "The ordered middleware/auth chain" is one
+of the four questions this engine exists to answer, and the order was only ever
+implied by where the layout happened to put the box. It is now a `1.` `2.` `3.`
+prefix on the label.
+
+**One rendering bug fixed.** `#flow` inherited `width/height: 100%` from the
+global `svg` rule, which overrode the height attribute `drawFlowchart()` set
+and stretched the flowchart to the full height of the inspector panel. It is
+now sized explicitly from its own aspect ratio, scaled to the panel's content
+width but never below 0.7 — past that the 9px condition text stops being
+readable, and a diagram nobody can read is worse than one the panel scrolls
+sideways for.
+
+**Verified.** Layout maths checked against the running server's real payload as
+described above; the inline script parses; `midpointOf` checked on straight,
+L-shaped and degenerate inputs; 457 tests pass; typecheck clean. No tests were
+added, per instruction.
