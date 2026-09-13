@@ -76,6 +76,23 @@
   .cfg.error_exit { border-color: var(--error); }
   .cfg.success { border-color: var(--success); }
   .cfg.unknown { border-color: var(--unknown); }
+  /* The decision-structure flowchart. Shape carries the construct, colour the
+     outcome — the same two-axis rule the main graph obeys. */
+  #flow { width: 100%; background: #0d111788; border: 1px solid var(--border);
+          border-radius: 6px; margin: 6px 0; display: block; }
+  #flow .b { fill: #ffffff08; stroke: #8b949e; stroke-width: 1.4; }
+  #flow .b.decision { fill: #d2992218; stroke: var(--inferred); }
+  #flow .b.terminal { fill: #ffffff10; stroke: var(--dim); }
+  #flow .b.success { stroke: var(--success); fill: #3fb95018; }
+  #flow .b.error_exit { stroke: var(--error); fill: #f8514918; }
+  #flow .b.unknown { stroke: var(--unknown); }
+  #flow text { font-size: 9px; fill: var(--text); }
+  #flow .arm { font-size: 8px; fill: var(--dim); }
+  #flow .fe { fill: none; stroke: #6e7681; stroke-width: 1.2; }
+  #flow .fe.true { stroke: var(--success); }
+  #flow .fe.false { stroke: var(--dim); }
+  #flow .fe.catch { stroke: var(--error); stroke-dasharray: 4 3; }
+  #flow .fe.loop_back { stroke: var(--certain); stroke-dasharray: 3 3; }
   .warn { color: var(--inferred); }
   .gap { color: var(--unresolved); }
   button, select, input {
@@ -333,6 +350,7 @@ function inspect(n) {
     // P2-T12: green success, red error exit, grey undetermined. A SEPARATE
     // axis from the edge styling, and the legend says so.
     out.push("<h2>execution paths</h2>");
+    out.push('<svg id="flow"></svg>');
     for (const b of cfg.blocks) {
       if (b.kind === "root") continue;
       const outcome = b.outcome ?? "";
@@ -360,6 +378,192 @@ function inspect(n) {
     }
   }
   $("inspector").innerHTML = out.join("");
+  // After innerHTML, so the <svg id="flow"> placeholder exists to draw into.
+  if (cfg) void drawFlowchart(cfg);
+}
+
+// ---------------------------------------------------------------------------
+// The decision-structure flowchart (P2-T12, migration 011)
+// ---------------------------------------------------------------------------
+// A second, small elkjs layout scoped to ONE function — the same engine the
+// main graph uses, pointed at `function_cfg` + `function_cfg_edges` instead of
+// the call graph.
+//
+// Shape carries the construct (diamond = decision, oval = start/end,
+// rectangle = try/catch/finally); colour carries the OUTCOME. That is the same
+// two-axis rule the main canvas obeys, which is why a red diamond is
+// impossible here: a decision has no outcome of its own, only its exits do.
+const FLOW_SHAPE = (b) =>
+  b.kind === "root" || b.kind === "exit" ? "terminal"
+    : b.kind === "branch" || b.kind === "guard" || b.kind === "loop" ? "decision"
+      : "process";
+
+function flowLabel(b) {
+  if (b.kind === "root") return "start";
+  if (b.kind === "exit") {
+    return `${b.exitForm ?? "exit"}${b.errorName ? ` · ${b.errorName}` : ""}`;
+  }
+  if (b.condition) return clip(b.condition, 30);
+  return b.kind;
+}
+
+async function drawFlowchart(cfg) {
+  const el = $("flow");
+  if (!el) return;
+  const END = "implicit-end";
+
+  // A loop's back-edge is a self-edge. elk routes those poorly and the shape
+  // is always the same arc, so it is drawn by hand and kept out of the layout.
+  const selfEdges = cfg.edges.filter((e) => e.to === e.from);
+  const linked = cfg.edges.filter((e) => e.to !== e.from);
+  const needsEnd = linked.some((e) => e.to === null);
+
+  const sizeOf = (b) => FLOW_SHAPE(b) === "decision"
+    ? { width: 172, height: 54 }
+    : { width: 150, height: 32 };
+
+  const children = cfg.blocks.map((b) => ({ id: String(b.index), ...sizeOf(b) }));
+  if (needsEnd) children.push({ id: END, width: 150, height: 32 });
+
+  const laid = await elk.layout({
+    id: "cfg",
+    layoutOptions: {
+      "elk.algorithm": "layered",
+      // Flowcharts read top-to-bottom; the call graph reads left-to-right.
+      "elk.direction": "DOWN",
+      "elk.spacing.nodeNode": "20",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "38",
+      "elk.spacing.edgeNode": "16",
+    },
+    children,
+    edges: linked.map((e, i) => ({
+      id: `fe${i}`,
+      sources: [String(e.from)],
+      targets: [e.to === null ? END : String(e.to)],
+    })),
+  });
+
+  const pos = new Map();
+  for (const c of laid.children ?? []) {
+    pos.set(c.id, { x: c.x, y: c.y, w: c.width, h: c.height });
+  }
+
+  const pad = 8;
+  const w = (laid.width ?? 300) + pad * 2;
+  const h = (laid.height ?? 200) + pad * 2;
+  el.setAttribute("viewBox", `${-pad} ${-pad} ${w} ${h}`);
+  el.setAttribute("height", String(Math.min(h, 420)));
+  el.innerHTML = "";
+
+  // Self-contained marker: this is a different <svg> from the main canvas and
+  // must not depend on whether that one has been drawn yet.
+  const defs = svg("defs");
+  const marker = svg("marker", {
+    id: "farrow", viewBox: "0 0 10 10", refX: "9", refY: "5",
+    markerWidth: "5", markerHeight: "5", orient: "auto-start-reverse",
+  });
+  marker.append(svg("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "#6e7681" }));
+  defs.append(marker);
+  el.append(defs);
+
+  // Edges first, so shapes sit on top of the arrowheads.
+  laid.edges?.forEach((le, i) => {
+    const model = linked[i];
+    const section = le.sections?.[0];
+    if (!model || !section) return;
+    const points = [section.startPoint, ...(section.bendPoints ?? []), section.endPoint];
+    el.append(svg("path", {
+      class: `fe ${model.label}`,
+      d: points.map((p, j) => `${j === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" "),
+      "marker-end": "url(#farrow)",
+    }));
+
+    // `next` is an unlabelled arrow — a plain sequence needs no word. The
+    // arms that a reader has to tell apart are the ones that get text.
+    if (model.label !== "next") {
+      const mid = points[Math.floor(points.length / 2)];
+      const t = svg("text", { class: "arm", x: mid.x + 4, y: mid.y - 3 });
+      t.textContent = model.label === "loop_back" ? "loop" : model.label;
+      el.append(t);
+    }
+  });
+
+  for (const b of cfg.blocks) {
+    const p = pos.get(String(b.index));
+    if (!p) continue;
+    const shape = FLOW_SHAPE(b);
+    const cls = `b ${shape} ${b.outcome ?? ""}`.trim();
+
+    if (shape === "decision") {
+      // A real diamond, not a rounded box: the ISO shape is what makes a
+      // two-way branch readable at a glance.
+      el.append(svg("polygon", {
+        class: cls,
+        points: [
+          `${p.x + p.w / 2},${p.y}`,
+          `${p.x + p.w},${p.y + p.h / 2}`,
+          `${p.x + p.w / 2},${p.y + p.h}`,
+          `${p.x},${p.y + p.h / 2}`,
+        ].join(" "),
+      }));
+    } else if (shape === "terminal") {
+      el.append(svg("rect", {
+        class: cls, x: p.x, y: p.y, width: p.w, height: p.h,
+        rx: p.h / 2, ry: p.h / 2,
+      }));
+    } else {
+      el.append(svg("rect", {
+        class: cls, x: p.x, y: p.y, width: p.w, height: p.h, rx: 3,
+      }));
+    }
+
+    const text = svg("text", {
+      x: p.x + p.w / 2, y: p.y + p.h / 2 + 3, "text-anchor": "middle",
+    });
+    text.textContent = clip(flowLabel(b), shape === "decision" ? 26 : 22);
+    const title = svg("title");
+    title.textContent =
+      `L${b.startLine}-${b.endLine} ${b.kind}` +
+      (b.condition ? `\n${b.condition}` : "") +
+      (b.outcome ? `\noutcome: ${b.outcome}` : "");
+    text.append(title);
+    el.append(text);
+  }
+
+  // The hand-drawn back-edges: an arc down the left side, returning to the
+  // condition that controls the loop.
+  for (const e of selfEdges) {
+    const p = pos.get(String(e.from));
+    if (!p) continue;
+    const left = p.x - 14;
+    el.append(svg("path", {
+      class: "fe loop_back",
+      d: `M ${p.x} ${p.y + p.h / 2} C ${left - 12} ${p.y + p.h / 2},` +
+         ` ${left - 12} ${p.y - 6}, ${p.x + p.w / 2} ${p.y}`,
+      "marker-end": "url(#farrow)",
+    }));
+    const t = svg("text", { class: "arm", x: left - 22, y: p.y + p.h / 2 });
+    t.textContent = "loop";
+    el.append(t);
+  }
+
+  if (needsEnd) {
+    const p = pos.get(END);
+    if (p) {
+      el.append(svg("rect", {
+        class: "b terminal", x: p.x, y: p.y, width: p.w, height: p.h,
+        rx: p.h / 2, ry: p.h / 2,
+      }));
+      const t = svg("text", {
+        x: p.x + p.w / 2, y: p.y + p.h / 2 + 3, "text-anchor": "middle",
+        fill: "var(--dim)",
+      });
+      // Named, not blank: control reaching here is an implicit return, which
+      // is a fact about the function, not a gap in the analysis.
+      t.textContent = "end (implicit)";
+      el.append(t);
+    }
+  }
 }
 
 function inspectRoute() {

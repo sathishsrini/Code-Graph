@@ -60,20 +60,32 @@ export function ingestCfgs(
     const nodeId = ctx.nodeIdOf(symbol);
     if (nodeId === null) { counts.unkeyed += 1; continue; }
 
-    ctx.store.replaceCfg(nodeId, cfg.blocks.map((b) => ({
-      symbolNodeId: nodeId,
-      blockIndex: b.blockIndex,
-      parentIndex: b.parentIndex,
-      kind: b.kind,
-      conditionText: b.conditionText,
-      outcome: b.outcome,
-      exitForm: b.exitForm,
-      errorName: b.errorName,
-      startLine: b.startLine,
-      endLine: b.endLine,
-      fileId: ctx.fileId,
-      runId: ctx.runId,
-    })));
+    ctx.store.replaceCfg(
+      nodeId,
+      cfg.blocks.map((b) => ({
+        symbolNodeId: nodeId,
+        blockIndex: b.blockIndex,
+        parentIndex: b.parentIndex,
+        branchLabel: b.branchLabel,
+        kind: b.kind,
+        conditionText: b.conditionText,
+        outcome: b.outcome,
+        exitForm: b.exitForm,
+        errorName: b.errorName,
+        startLine: b.startLine,
+        endLine: b.endLine,
+        fileId: ctx.fileId,
+        runId: ctx.runId,
+      })),
+      cfg.edges.map((e) => ({
+        symbolNodeId: nodeId,
+        fromBlock: e.from,
+        toBlock: e.to,
+        label: e.label,
+        fileId: ctx.fileId,
+        runId: ctx.runId,
+      })),
+    );
 
     counts.functions += 1;
     counts.blocks += cfg.blocks.length;
@@ -113,6 +125,7 @@ function ownerOf(ranges: DefRange[], path: string, line: number): string | null 
 export interface StoredBlock {
   blockIndex: number;
   parentIndex: number | null;
+  branchLabel: string | null;
   kind: string;
   conditionText: string | null;
   outcome: string | null;
@@ -124,12 +137,13 @@ export interface StoredBlock {
 
 export function readCfg(store: FactStore, symbolNodeId: number): StoredBlock[] {
   return (store.raw().prepare(
-    `SELECT block_index, parent_index, kind, condition_text, outcome,
+    `SELECT block_index, parent_index, branch_label, kind, condition_text, outcome,
             exit_form, error_name, start_line, end_line
        FROM function_cfg WHERE symbol_node_id = ? ORDER BY block_index`,
   ).all(symbolNodeId) as Array<Record<string, string | number | null>>).map((r) => ({
     blockIndex: Number(r["block_index"]),
     parentIndex: r["parent_index"] === null ? null : Number(r["parent_index"]),
+    branchLabel: (r["branch_label"] as string | null) ?? null,
     kind: String(r["kind"]),
     conditionText: (r["condition_text"] as string | null) ?? null,
     outcome: (r["outcome"] as string | null) ?? null,
@@ -137,6 +151,24 @@ export function readCfg(store: FactStore, symbolNodeId: number): StoredBlock[] {
     errorName: (r["error_name"] as string | null) ?? null,
     startLine: Number(r["start_line"]),
     endLine: Number(r["end_line"]),
+  }));
+}
+
+export interface StoredCfgEdge {
+  from: number;
+  to: number | null;
+  label: string;
+}
+
+/** The flowchart's arrows for one function — the read-back half of migration 011. */
+export function readCfgEdges(store: FactStore, symbolNodeId: number): StoredCfgEdge[] {
+  return (store.raw().prepare(
+    `SELECT from_block, to_block, label
+       FROM function_cfg_edges WHERE symbol_node_id = ? ORDER BY from_block, label`,
+  ).all(symbolNodeId) as Array<Record<string, string | number | null>>).map((r) => ({
+    from: Number(r["from_block"]),
+    to: r["to_block"] === null ? null : Number(r["to_block"]),
+    label: String(r["label"]),
   }));
 }
 

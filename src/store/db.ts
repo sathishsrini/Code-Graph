@@ -111,6 +111,8 @@ export interface CfgBlockInput {
   symbolNodeId: number;
   blockIndex: number;
   parentIndex: number | null;
+  /** Which arm of its own parent this block sits in — see migration 011. */
+  branchLabel?: string | null;
   kind: string;
   conditionText?: string | null;
   outcome?: string | null;
@@ -118,6 +120,17 @@ export interface CfgBlockInput {
   errorName?: string | null;
   startLine: number;
   endLine: number;
+  fileId: number;
+  runId: number;
+}
+
+/** One arrow in the decision-structure flowchart (migration 011). */
+export interface CfgEdgeInput {
+  symbolNodeId: number;
+  fromBlock: number;
+  /** null = falls off the end of the function — an implicit exit. */
+  toBlock: number | null;
+  label: "true" | "false" | "next" | "loop_back" | "catch";
   fileId: number;
   runId: number;
 }
@@ -511,26 +524,47 @@ export class FactStore {
 
   // -- function_cfg (P1-T17, P1-T18) ----------------------------------------
 
-  /** Replace one function's CFG. R24's discipline: wholesale, never merged. */
-  replaceCfg(symbolNodeId: number, blocks: CfgBlockInput[]): void {
+  /**
+   * Replace one function's CFG — blocks AND the flowchart's edges together.
+   *
+   * R24's discipline: wholesale, never merged. Both tables are cleared and
+   * reinserted for this symbol in one call, so a re-index can never leave a
+   * stale edge pointing at a block index that no longer means what it did.
+   */
+  replaceCfg(
+    symbolNodeId: number, blocks: CfgBlockInput[], edges: CfgEdgeInput[] = [],
+  ): void {
     this.db.prepare("DELETE FROM function_cfg WHERE symbol_node_id = ?").run(symbolNodeId);
-    const insert = this.db.prepare(
+    this.db.prepare("DELETE FROM function_cfg_edges WHERE symbol_node_id = ?").run(symbolNodeId);
+
+    const insertBlock = this.db.prepare(
       `INSERT INTO function_cfg
-         (symbol_node_id, block_index, parent_index, kind, condition_text,
-          outcome, exit_form, error_name, start_line, end_line, file_id, run_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (symbol_node_id, block_index, parent_index, branch_label, kind,
+          condition_text, outcome, exit_form, error_name, start_line, end_line,
+          file_id, run_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const b of blocks) {
-      insert.run(
-        b.symbolNodeId, b.blockIndex, b.parentIndex, b.kind, b.conditionText ?? null,
-        b.outcome ?? null, b.exitForm ?? null, b.errorName ?? null,
+      insertBlock.run(
+        b.symbolNodeId, b.blockIndex, b.parentIndex, b.branchLabel ?? null, b.kind,
+        b.conditionText ?? null, b.outcome ?? null, b.exitForm ?? null, b.errorName ?? null,
         b.startLine, b.endLine, b.fileId, b.runId,
       );
+    }
+
+    const insertEdge = this.db.prepare(
+      `INSERT INTO function_cfg_edges
+         (symbol_node_id, from_block, to_block, label, file_id, run_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    for (const e of edges) {
+      insertEdge.run(e.symbolNodeId, e.fromBlock, e.toBlock, e.label, e.fileId, e.runId);
     }
   }
 
   deleteCfgByProvenance(fileId: number): number {
     const r = this.db.prepare("DELETE FROM function_cfg WHERE file_id = ?").run(fileId);
+    this.db.prepare("DELETE FROM function_cfg_edges WHERE file_id = ?").run(fileId);
     return Number(r.changes);
   }
 

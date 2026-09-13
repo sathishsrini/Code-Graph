@@ -807,3 +807,53 @@ no per-token cost, so R64's counting columns would have been a costume. Path
 summaries (`--scope path`) and multi-model routing are not exposed yet. The
 containment test in `summaries.test.ts` still guards the boundary this entry
 sits behind.
+
+---
+
+## Decision-structure flowchart — CFG successor edges (extends P1-T17/P1-T18, P2-T12)
+
+**Why.** `function_cfg.parent_index` is *containment* nesting — "this guard sits
+inside this try" — not control flow. It cannot answer "which block runs after
+this diamond's True arm" or "where does a loop body return to", so the viewer
+could only ever show a colour-coded flat list. The two requirements R78 is
+written against (a real branch view, two independent axes) need a graph, not a
+tree.
+
+**Where it lives.** Migration `011_cfg_flow_edges.sql` adds
+`function_cfg.branch_label` (which arm of its own parent a block sits in) and
+`function_cfg_edges` (`from_block → to_block`, labelled
+`true|false|next|loop_back|catch`). `deriveEdges()` in `src/static/cfg.ts` is a
+pure function over the finished block list — graph derivation, not parsing.
+`replaceCfg()` now writes blocks and edges together so a re-index can never
+leave an edge pointing at a block index that has changed meaning. The renderer
+is `drawFlowchart()` in `src/ui/app.html`: a second elkjs layout scoped to one
+function, `elk.direction=DOWN`, drawing real ISO shapes — diamond for a
+decision, oval for start/end, rectangle for try/catch/finally — with True/False
+arms labelled and loop back-edges drawn by hand as a side arc.
+
+**One pre-existing bug fixed on the way.** `catch`/`finally` were emitted with
+the *try's* parent, making them siblings of the try rather than its children.
+That is wrong independently of this feature: a `finally` must run after both
+the try body and any catch, and with the flattened parentage the successor walk
+skipped straight past it. They are now nested under the try, and `nextAfter()`
+treats falling out of a try body or catch as reaching the `finally` first —
+which is not optional the way an ordinary next-sibling is.
+
+**Verified.** Against the real corpus, not a fixture: `proxyToEngine` (nested
+try/catch, a sentinel guard, an `if/else-if/else-if` chain) derives 20 blocks
+and 31 edges, every one hand-checked against source — the guard's True arm
+reaches the `KRI40-AUTH-001` exit, its False arm the try, the try carries a
+`catch` edge to the handler, and the else-if chain converges on the mail-send
+try regardless of which arm is taken. 123 edges across the corpus; 457 tests
+pass; typecheck clean.
+
+**What it does not do.** `break`/`continue` are not modelled as jump targets —
+the same syntactic-scope boundary the file already declares for interprocedural
+data flow. A try's `catch` edge is one abstract "an exception here transfers
+control there" arrow from the try node, not from every statement in the body;
+real unwinding can happen anywhere inside and is not recoverable syntactically.
+Straight-line statements get no process rectangle of their own — only
+decisions, exits and handlers are nodes, and a branch arm with no nested
+construct draws its arrow straight to the merge point. The corpus contains no
+loops at all, so `loop_back` is exercised only by direct verification, not by
+corpus data.

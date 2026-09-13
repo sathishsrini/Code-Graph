@@ -21,7 +21,7 @@
 
 import type { FactStore } from "../store/db.ts";
 import { endpointFlow, type EndpointFlow, type FlowNode } from "../query/endpoint-flow.ts";
-import { readCfg } from "../static/cfg-ingest.ts";
+import { readCfg, readCfgEdges } from "../static/cfg-ingest.ts";
 import { displayNameOf } from "../static/scip/symbol.ts";
 
 export interface GraphNode {
@@ -86,6 +86,8 @@ export interface CfgView {
   blocks: Array<{
     index: number;
     parent: number | null;
+    /** Which arm of `parent` this block sits in — then/else/loop_body/etc. */
+    branchLabel: string | null;
     kind: string;
     condition: string | null;
     outcome: string | null;
@@ -94,6 +96,8 @@ export interface CfgView {
     startLine: number;
     endLine: number;
   }>;
+  /** The flowchart's arrows: diamond → true/false successor, loop → back-edge. */
+  edges: Array<{ from: number; to: number | null; label: string }>;
 }
 
 /**
@@ -281,10 +285,11 @@ function attachCfg(
   cfg[symbolKey] = {
     symbol: displayNameOf(symbolKey),
     blocks: blocks.map((b) => ({
-      index: b.blockIndex, parent: b.parentIndex, kind: b.kind,
+      index: b.blockIndex, parent: b.parentIndex, branchLabel: b.branchLabel, kind: b.kind,
       condition: b.conditionText, outcome: b.outcome, exitForm: b.exitForm,
       errorName: b.errorName, startLine: b.startLine, endLine: b.endLine,
     })),
+    edges: readCfgEdges(store, symbolNodeId),
   };
 }
 

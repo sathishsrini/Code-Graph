@@ -37,9 +37,32 @@ export type BlockKind =
 export type Outcome = "success" | "error_exit" | "unknown";
 export type ExitForm = "throw" | "return_error" | "return_value" | "implicit";
 
+/**
+ * Which arm of ITS OWN PARENT a block sits in.
+ *
+ * `parentIndex` alone cannot tell a `then`-arm block from an `else`-arm one:
+ * both are nested directly under the same `if`, sharing the same
+ * `parentIndex`. This is the field the flowchart needs to know which side of
+ * the diamond to draw a block on, and it is how edge derivation tells the two
+ * arms apart when they share a parent.
+ */
+export type BranchLabel = "then" | "else" | "try_body" | "catch" | "finally" | "loop_body";
+
+/** A directed edge in the decision-structure flowchart. */
+export type CfgEdgeLabel = "true" | "false" | "next" | "loop_back" | "catch";
+
+export interface CfgEdge {
+  from: number;
+  /** null = falls off the end of the function — an implicit exit. */
+  to: number | null;
+  label: CfgEdgeLabel;
+}
+
 export interface CfgBlock {
   blockIndex: number;
   parentIndex: number | null;
+  /** Null at the root, and at any block with no meaningful arm of its own. */
+  branchLabel: BranchLabel | null;
   kind: BlockKind;
   /** Verbatim condition source. Never evaluated. */
   conditionText: string | null;
@@ -55,6 +78,8 @@ export interface FunctionCfg {
   /** The function this CFG describes, as reported by the tree-sitter pass. */
   fn: FunctionRange;
   blocks: CfgBlock[];
+  /** The flowchart's arrows — see `deriveEdges`. */
+  edges: CfgEdge[];
 }
 
 export interface CfgRules {
@@ -81,12 +106,10 @@ export function extractCfg(
     if (!node) continue;
     const body = node.childForFieldName("body");
     if (!body) continue;
-    out.push({
-      fn,
-      blocks: parsed.grammar === "python"
-        ? buildCfg(body, rules, PYTHON)
-        : buildCfg(body, rules, JAVASCRIPT),
-    });
+    const blocks = parsed.grammar === "python"
+      ? buildCfg(body, rules, PYTHON)
+      : buildCfg(body, rules, JAVASCRIPT);
+    out.push({ fn, blocks, edges: deriveEdges(blocks) });
   }
   return out;
 }
@@ -164,20 +187,30 @@ const PYTHON: Dialect = {
 
 function buildCfg(body: Node, rules: CfgRules, d: Dialect): CfgBlock[] {
   const blocks: CfgBlock[] = [{
-    blockIndex: 0, parentIndex: null, kind: "root", conditionText: null,
+    blockIndex: 0, parentIndex: null, branchLabel: null, kind: "root", conditionText: null,
     outcome: null, exitForm: null, errorName: null,
     startLine: lineOf(body), endLine: body.endPosition.row + 1, startCol: colOf(body),
   }];
 
-  /** Append a block under `parent` and return its index. */
+  /**
+   * Append a block under `parent` and return its index.
+   *
+   * `label` is the block's OWN arm relative to `parent` — inherited from
+   * whichever region the caller is currently walking (ambient), except at the
+   * three places a new region begins (`then`/`else`/`try_body`/`catch`/
+   * `finally`/`loop_body`), where the caller passes the fresh label instead of
+   * the ambient one.
+   */
   const emit = (
     kind: BlockKind, node: Node, parent: number, condition: string | null,
+    label: BranchLabel | null,
     exit?: Pick<CfgBlock, "outcome" | "exitForm" | "errorName">,
   ): number => {
     const blockIndex = blocks.length;
     blocks.push({
       blockIndex,
       parentIndex: parent,
+      branchLabel: label,
       kind,
       conditionText: condition,
       outcome: exit?.outcome ?? null,
@@ -287,39 +320,39 @@ function buildCfg(body: Node, rules: CfgRules, d: Dialect): CfgBlock[] {
    * a fork in the flow, it is a gate — everything after it is the success
    * continuation, and every call below is guarded by that condition.
    */
-  const visitIf = (node: Node, parent: number): void => {
+  const visitIf = (node: Node, parent: number, label: BranchLabel | null): void => {
     const consequence = node.childForFieldName(d.consequenceField);
     const alternative = d.alternativeField
       ? node.childForFieldName(d.alternativeField)
       : null;
     const guards = consequence !== null && exitsImmediately(consequence, d);
-    const index = emit(guards ? "guard" : "branch", node, parent, conditionText(node));
+    const index = emit(guards ? "guard" : "branch", node, parent, conditionText(node), label);
     // `if (authErr) return authErr;` has the return AS the consequence, not
     // inside a block. `visit` iterates a node's children, so it would descend
     // into the returned expression and never emit the exit — the guard would
     // be recorded with no outcome at all.
-    if (consequence) visitStatement(consequence, index);
-    if (alternative) visitStatement(alternative, index);
+    if (consequence) visitStatement(consequence, index, "then");
+    if (alternative) visitStatement(alternative, index, "else");
   };
 
   /** One statement, which may itself be the exit rather than contain it. */
-  function visitStatement(node: Node, parent: number): void {
+  function visitStatement(node: Node, parent: number, label: BranchLabel | null): void {
     if (node.type === d.returnNode) {
-      emit("exit", node, parent, null, classifyReturn(node, parent));
+      emit("exit", node, parent, null, label, classifyReturn(node, parent));
       return;
     }
     if (node.type === d.throwNode) {
-      emit("exit", node, parent, null, {
+      emit("exit", node, parent, null, label, {
         outcome: "error_exit", exitForm: "throw",
         errorName: constructorName(d.argumentOf(node), d),
       });
       return;
     }
-    if (node.type === d.ifNode) { visitIf(node, parent); return; }
-    visit(node, parent);
+    if (node.type === d.ifNode) { visitIf(node, parent, label); return; }
+    visit(node, parent, label);
   }
 
-  function visit(node: Node, parent: number): void {
+  function visit(node: Node, parent: number, label: BranchLabel | null): void {
     for (let i = 0; i < node.namedChildCount; i += 1) {
       const child = node.namedChild(i);
       if (!child) continue;
@@ -327,32 +360,37 @@ function buildCfg(body: Node, rules: CfgRules, d: Dialect): CfgBlock[] {
       // FunctionRange comes round. Descending would merge two flows.
       if (d.isFunction(child.type)) continue;
 
-      if (child.type === d.ifNode) { visitIf(child, parent); continue; }
+      if (child.type === d.ifNode) { visitIf(child, parent, label); continue; }
 
       if (child.type === d.tryNode) {
-        const tryIndex = emit("try", child, parent, null);
+        const tryIndex = emit("try", child, parent, null, label);
         const tryBody = child.childForFieldName("body") ?? child.namedChild(0);
-        if (tryBody) visit(tryBody, tryIndex);
+        if (tryBody) visit(tryBody, tryIndex, "try_body");
         for (let j = 0; j < child.namedChildCount; j += 1) {
           const clause = child.namedChild(j)!;
           if (d.catchNodes.includes(clause.type)) {
-            // A catch is where errors are HANDLED, so it is not itself an error
-            // exit — what it returns decides that, and is visited below.
-            visit(clause, emit("catch", clause, parent, catchParam(clause)));
+            // Nested UNDER the try, not a sibling of it: a `finally` has to
+            // run after both the try body and any catch, and deriving that
+            // successor edge needs the real containment, not a flattened
+            // "these three happen to be near each other" list.
+            const catchIndex = emit("catch", clause, tryIndex, catchParam(clause), "catch");
+            visit(clause, catchIndex, null);
           } else if (d.finallyNodes.includes(clause.type)) {
-            visit(clause, emit("finally", clause, parent, null));
+            const finallyIndex = emit("finally", clause, tryIndex, null, "finally");
+            visit(clause, finallyIndex, null);
           }
         }
         continue;
       }
 
       if (d.loopNodes.includes(child.type)) {
-        visit(child, emit("loop", child, parent, conditionText(child)));
+        const loopIndex = emit("loop", child, parent, conditionText(child), label);
+        visit(child, loopIndex, "loop_body");
         continue;
       }
 
       if (child.type === d.throwNode) {
-        emit("exit", child, parent, null, {
+        emit("exit", child, parent, null, label, {
           outcome: "error_exit", exitForm: "throw",
           errorName: constructorName(d.argumentOf(child), d),
         });
@@ -360,16 +398,146 @@ function buildCfg(body: Node, rules: CfgRules, d: Dialect): CfgBlock[] {
       }
 
       if (child.type === d.returnNode) {
-        emit("exit", child, parent, null, classifyReturn(child, parent));
+        emit("exit", child, parent, null, label, classifyReturn(child, parent));
         continue;
       }
 
-      visit(child, parent);
+      visit(child, parent, label);
     }
   }
 
-  visit(body, 0);
+  visit(body, 0, null);
   return blocks;
+}
+
+// ---------------------------------------------------------------------------
+// Deriving the flowchart's arrows from the completed block list
+// ---------------------------------------------------------------------------
+
+/**
+ * Turn the containment tree into directed successor edges.
+ *
+ * A pure function over the finished `CfgBlock[]`, deliberately separate from
+ * the walk above: the tree already has everything needed (`parentIndex`,
+ * `branchLabel`, and source order via `blockIndex`), so this is graph
+ * derivation, not parsing, and is testable on a plain array with no
+ * tree-sitter node in sight.
+ *
+ * **Scope, stated so it is not over-promised.** This models `if`/`else`,
+ * `try`/`catch`/`finally` and loop entry/exit/repeat. It does NOT model
+ * `break`/`continue` as separate jump targets — a `break` inside a loop body
+ * is invisible to this pass, same as the file's existing exclusion of
+ * interprocedural data flow. And a try's `catch` edge is one abstract "an
+ * exception here transfers control there" arrow from the try node itself, not
+ * from every individual statement in the body — real exception unwinding can
+ * happen from any point in the try, which is unmodelable syntactically.
+ */
+export function deriveEdges(blocks: CfgBlock[]): CfgEdge[] {
+  const edges: CfgEdge[] = [];
+
+  const byParent = new Map<number, CfgBlock[]>();
+  for (const b of blocks) {
+    if (b.parentIndex === null) continue;
+    const list = byParent.get(b.parentIndex);
+    if (list) list.push(b); else byParent.set(b.parentIndex, [b]);
+  }
+  for (const list of byParent.values()) list.sort((a, b) => a.blockIndex - b.blockIndex);
+
+  /** The first child of `parent`, optionally restricted to one arm. */
+  const firstChild = (parent: number, label?: BranchLabel): number | null => {
+    const list = byParent.get(parent) ?? [];
+    const matches = label ? list.filter((b) => b.branchLabel === label) : list;
+    return matches.length > 0 ? matches[0]!.blockIndex : null;
+  };
+
+  /** Every child of `parent` in one arm — for try's (possibly several) catches. */
+  const childrenWithLabel = (parent: number, label: BranchLabel): CfgBlock[] =>
+    (byParent.get(parent) ?? []).filter((b) => b.branchLabel === label);
+
+  /**
+   * What runs after `blockIndex`'s ENTIRE subtree finishes — its merge point.
+   *
+   * Climbs the containment tree looking for the next sibling in the SAME arm.
+   * The one structural exception: falling out of a try's body or its catch
+   * does not skip straight to whatever follows the try — a `finally`, if one
+   * exists, runs first and is not optional the way an ordinary "next
+   * statement" is.
+   */
+  const nextAfter = (blockIndex: number): number | null => {
+    let current = blocks[blockIndex]!;
+    for (;;) {
+      const parent = current.parentIndex;
+      if (parent === null) return null; // falls off the end of the function
+      const siblings = (byParent.get(parent) ?? []).filter((b) =>
+        b.branchLabel === current.branchLabel && b.blockIndex > current.blockIndex);
+      if (siblings.length > 0) return siblings[0]!.blockIndex;
+
+      const parentBlock = blocks[parent]!;
+      if (parentBlock.kind === "try" &&
+          (current.branchLabel === "try_body" || current.branchLabel === "catch")) {
+        const finallyBlock = firstChild(parent, "finally");
+        if (finallyBlock !== null) return finallyBlock;
+      }
+      current = parentBlock;
+    }
+  };
+
+  for (const block of blocks) {
+    const i = block.blockIndex;
+    switch (block.kind) {
+      case "exit":
+        break; // terminal — no outgoing edges
+
+      case "branch":
+      case "guard": {
+        const truthy = firstChild(i, "then");
+        const falsy = firstChild(i, "else");
+        edges.push({ from: i, to: truthy ?? nextAfter(i), label: "true" });
+        edges.push({ from: i, to: falsy ?? nextAfter(i), label: "false" });
+        break;
+      }
+
+      case "loop": {
+        const bodyEntry = firstChild(i, "loop_body");
+        // Only when the body holds a construct this pass captures. A body of
+        // plain statements produces no block to point at, and a self-pointing
+        // `true` edge would say the same thing as the back-edge below twice.
+        if (bodyEntry !== null) edges.push({ from: i, to: bodyEntry, label: "true" });
+        edges.push({ from: i, to: nextAfter(i), label: "false" });
+        // Unconditional: a loop repeats whether or not its body contains
+        // anything this pass models. Emitting it only for loops with nested
+        // constructs would draw a loop that never loops.
+        edges.push({ from: i, to: i, label: "loop_back" });
+        break;
+      }
+
+      case "try": {
+        const tryBody = firstChild(i, "try_body");
+        const finallyBlock = firstChild(i, "finally");
+        edges.push({ from: i, to: tryBody ?? finallyBlock ?? nextAfter(i), label: "next" });
+        for (const c of childrenWithLabel(i, "catch")) {
+          edges.push({ from: i, to: c.blockIndex, label: "catch" });
+        }
+        break;
+      }
+
+      case "catch": {
+        const finallyBlock = firstChild(block.parentIndex!, "finally");
+        const entry = firstChild(i);
+        edges.push({ from: i, to: entry ?? finallyBlock ?? nextAfter(i), label: "next" });
+        break;
+      }
+
+      case "finally":
+      case "root": {
+        const entry = firstChild(i);
+        edges.push({ from: i, to: entry ?? nextAfter(i), label: "next" });
+        break;
+      }
+    }
+  }
+
+  return edges;
 }
 
 // ---------------------------------------------------------------------------
