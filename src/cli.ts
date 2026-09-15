@@ -72,7 +72,7 @@ COMMANDS
   impact <symbol>     What breaks if this changes — reverse closure (P1-T13)
   security            Coverage matrix + the writes-without-tenant anomaly (P1-T14)
   context <symbol>    Minimum context to edit this function, budgeted (P1-T15)
-  mcp                 Serve the four queries over MCP on stdio (P1-T16)
+  mcp                 Serve the queries over MCP on stdio (P1-T16, P3-T6)
   otlp serve          Receive OTLP/HTTP traces into the spans table (P2-T8)
   promote             Confirm inferred edges against observed traces (P2-T9)
   errors              Observed / static / correlated failure analysis (P2-T10)

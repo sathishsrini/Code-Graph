@@ -56,6 +56,15 @@ export interface SearchOptions {
   correctedSeed?: string;
   /** Same EmbeddingProvider the index was built with, when vectors exist (R67). */
   embeddings?: EmbeddingProvider | null;
+  /**
+   * Restrict candidates to these node kinds.
+   *
+   * Applied BEFORE the top-K cut, not after — a kind that ranks below K could
+   * otherwise never surface. On this corpus `grn` puts nineteen Next.js
+   * form-field variables above the two routes actually named `/api/v1/grn`,
+   * so `kinds: ["route"]` filtered after an 8-row slice would return nothing.
+   */
+  kinds?: Array<"symbol" | "route" | "file">;
 }
 
 const RRF_K = 60;
@@ -298,10 +307,21 @@ export function search(store: FactStore, phrase: string, options: SearchOptions 
   const merged: RrfMerged[] = sets.length > 0 ? applyRRF(sets, RRF_K) : [];
 
   // Attach identity + merged metadata to the top candidates.
+  //
+  // With no `kinds` filter this is the unfiltered top-K, exactly as before —
+  // including the fact that a stale row can leave fewer than K candidates.
+  // A filter has to scan past K instead, or it could only ever narrow the same
+  // eight rows rather than reach the kind that was asked for.
+  const kinds = options.kinds ?? null;
   const candidates: SearchCandidate[] = [];
-  for (const m of merged.slice(0, topK)) {
+  for (const m of kinds ? merged : merged.slice(0, topK)) {
+    if (kinds && candidates.length >= topK) break;
     const kind = nodeKind(store, m.id);
     if (!kind) continue; // a stale search row without a live node is not a seed
+    // `nodeKind` reads whatever the store holds, so the comparison is widened
+    // rather than the kind narrowed — a node kind this search cannot identify
+    // is filtered out below by `identify`, not asserted away here.
+    if (kinds && !(kinds as string[]).includes(kind)) continue;
     const c = identify(store, m.id, kind);
     if (!c) continue;
     c.sources = m.sources;

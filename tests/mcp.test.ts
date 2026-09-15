@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FactStore } from "../src/store/db.ts";
 import { callTool, TOOLS } from "../src/mcp/server.ts";
+import { buildSearchIndex } from "../src/index/search.ts";
 
 let dir: string;
 before(() => { dir = mkdtempSync(join(tmpdir(), "code-intel-mcp-")); });
@@ -67,10 +68,22 @@ function seeded(name: string): FactStore {
 }
 
 describe("the tool contract", () => {
-  test("exactly the four queries R48 names are exposed", () => {
+  test("the four queries R48 names are all still exposed", () => {
+    // Split from the exact-set assertion below on purpose. This one guards the
+    // Phase 1 gate: R48's four must never be REMOVED. The other guards against
+    // tools appearing that nothing documents. A single deepEqual conflated
+    // "you broke the contract" with "you added something", which are different
+    // failures needing different fixes.
+    const names: string[] = TOOLS.map((t) => t.name);
+    for (const required of ["context_pack", "endpoint_flow", "impact", "security_path"]) {
+      assert.ok(names.includes(required), `R48 requires ${required}`);
+    }
+  });
+
+  test("the exposed tool set is exactly what is documented", () => {
     assert.deepEqual(
       TOOLS.map((t) => t.name).sort(),
-      ["context_pack", "endpoint_flow", "impact", "security_path"],
+      ["context_pack", "endpoint_flow", "impact", "search", "security_path"],
     );
   });
 
@@ -202,5 +215,98 @@ describe("gaps reach the model", () => {
       const out = callTool(store, "impact", { symbol: "helper" });
       assert.ok(out.includes("P2-T8"), "'no producer', not 'no traffic'");
     } finally { store.close(); }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// search (P3-T6, R79) — the entry point a model has when it has only a phrase
+// ---------------------------------------------------------------------------
+describe("search over MCP", () => {
+  const built = (name: string): FactStore => {
+    const store = seeded(name);
+    buildSearchIndex(store);
+    return store;
+  };
+
+  test("a phrase resolves to ranked candidates and a follow-up query", () => {
+    const store = built("search-hit.db");
+    try {
+      const out = callTool(store, "search", { phrase: "handler" });
+      assert.ok(out.includes("candidates["), "the table is present");
+      assert.ok(out.includes("indexBuilt: true"));
+      assert.ok(out.includes("follow: impact"), "it names the next query");
+    } finally { store.close(); }
+  });
+
+  test("NO numeric score reaches the model", () => {
+    // CLAUDE.md rule 4: confidence is an enum, never a number. A rank is an
+    // ordinal; an RRF score shown to a model gets read as a probability.
+    const store = built("search-noscore.db");
+    try {
+      const out = callTool(store, "search", { phrase: "handler" });
+      assert.ok(
+        out.includes("candidates[1]{rank,kind,display,where,signals,key}:"),
+        "the columns are exactly the ordinal ones",
+      );
+      for (const banned of ["score", "bm25", "cosine", "rrf"]) {
+        assert.ok(!out.toLowerCase().includes(banned), `${banned} must not be emitted`);
+      }
+    } finally { store.close(); }
+  });
+
+  test("a phrase that matches nothing is a result with a next move, not an error", () => {
+    const store = built("search-miss.db");
+    try {
+      const out = callTool(store, "search", { phrase: "zzz nothing here" });
+      assert.ok(!out.startsWith("error"), "a miss is an answer");
+      assert.ok(out.includes("candidates[0]:"), "the empty table is still named");
+      assert.ok(out.includes("feature_pack"), "it points at the manifest path");
+    } finally { store.close(); }
+  });
+
+  test("kinds filters before the top-K cut, so a low-ranked route still surfaces", () => {
+    // The corpus failure this prevents: `grn` puts nineteen form-field
+    // variables above the two routes actually named /api/v1/grn. Filtering
+    // after an 8-row slice would return nothing at all.
+    const store = built("search-kinds.db");
+    try {
+      const out = callTool(store, "search", { phrase: "p", kinds: ["route"] });
+      for (const line of out.split("\n")) {
+        if (/^ {2}\d+,/.test(line)) {
+          assert.ok(line.includes(",route,"), `only routes: ${line}`);
+        }
+      }
+    } finally { store.close(); }
+  });
+
+  test("an explicit seed overrides the ranking and says so", () => {
+    const store = built("search-seed.db");
+    try {
+      const out = callTool(store, "search", {
+        phrase: "anything", seed: "scip npm svc 1 `server.js`/helper().",
+      });
+      assert.ok(out.includes("corrected from"), "the override is reported");
+      assert.ok(out.includes("helper"));
+    } finally { store.close(); }
+  });
+
+  test("an unbuilt index reports itself rather than looking like a miss", () => {
+    // "Nothing matched" and "nothing was indexed" are different facts, and a
+    // model that cannot tell them apart concludes the code does not exist.
+    const store = seeded("search-unbuilt.db");
+    try {
+      const out = callTool(store, "search", { phrase: "handler" });
+      assert.ok(out.includes("indexBuilt: false"));
+      assert.ok(out.includes("search build"), "it names the command that fixes it");
+    } finally { store.close(); }
+  });
+
+  test("the ranking note tells the model the order is not a confidence", () => {
+    const tool = TOOLS.find((t) => t.name === "search")!;
+    assert.ok(tool.description.includes("RANKING, not a confidence"));
+    assert.ok(
+      tool.description.includes("never evidence"),
+      "an empty result is not proof of absence",
+    );
   });
 });

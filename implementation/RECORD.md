@@ -695,6 +695,10 @@ rather than covering for each other.
 | **P3-T3 FTS5 + embeddings for seeding** | `d33c8cc` | **done — lexical only; OPEN-8 blocks vectors** |
 | P3-T4 Joern/Opengrep side-car | — | not started |
 | P3-T5 additional languages | — | not started |
+| **P3-T6 `search` over MCP (R79)** | `—` | **done** |
+
+The P3-T2 row above is stale: OPEN-8 was closed with a decision and the feature
+shipped — see the narrative entry below and commits `a99eb5b` / `4cf32e9`.
 
 ## P3-T1 — `co_changed`
 
@@ -924,3 +928,46 @@ sideways for.
 described above; the inline script parses; `midpointOf` checked on straight,
 L-shaped and degenerate inputs; 457 tests pass; typecheck clean. No tests were
 added, per instruction.
+
+---
+
+## P3-T6 — the AI's way in
+
+Goal 2 of this project is the context supplier: hand a model the flow, the
+dependencies and the blast radius of a change without it reading the codebase.
+Four MCP tools already did that — and every one of them required the caller to
+already know a verbatim SCIP symbol or a `service/method/path` triple. The
+fuzzy entry point that turns a phrase into a seed, `search()`, shipped in P3-T3
+and was **wired only to the CLI**. A model connected over MCP had no way in at
+all; it had to guess a symbol name and hope.
+
+`search` is now the fifth tool. Three decisions in it are worth stating.
+
+**No number reaches the model.** `SearchCandidate` carries an RRF score, a
+bm25 and a cosine. CLAUDE.md rule 4 says confidence is an enum, never a number,
+and a model shown `0.0163` reads it as a probability of being right — which it
+is not, it is a position in a list. The tool emits an ordinal `rank` and the
+names of the signals that agreed (`lexical:and+phrase+prefix`), and nothing
+else. The raw values stay on the CLI `--json` path, where a human is diagnosing
+retrieval rather than acting on it. A test asserts the string `score`, `bm25`,
+`cosine` and `rrf` appear nowhere in the output.
+
+**A miss is an answer, and an unbuilt index is a different answer.** "Nothing
+matched your words" and "nothing was ever indexed" are different facts, and a
+model that cannot tell them apart concludes the behaviour does not exist. The
+output carries `indexBuilt`, and a miss carries a `hint` naming the next move.
+
+**`kinds` filters BEFORE the top-K cut.** This is not a micro-optimisation; it
+is the difference between the filter working and not. On the corpus, `grn`
+returns 29 rows whose **top 19 are Next.js form-field variables** (`grn_number0`,
+`remarks1`, …) — the six routes actually named `/api/v1/grn` sit at ranks 20-29,
+below the default `topK` of 8. Filtering after an 8-row slice returns nothing.
+Filtering inside the merge loop returns all six. With no `kinds` the scan is the
+unfiltered top-K exactly as before, stale-row behaviour included.
+
+**Verified against the corpus, not a fixture.** `search "check user auth"` →
+`checkUserAuth` via `lexical:phrase+prefix`. `search "grn" kinds=[route]` → the
+six GRN routes across both services, ranks 1-6. And the finding that justifies
+the next task: **`search "GRN creation"` matches nothing** — the `and` aspect
+needs every token and no indexed row contains "creation". The only place that
+feature is named is the URL. 465 tests pass; typecheck clean.

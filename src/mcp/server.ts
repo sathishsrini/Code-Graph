@@ -34,6 +34,7 @@ import { endpointFlow, RouteNotFound } from "../query/endpoint-flow.ts";
 import { impact, SeedNotFound } from "../query/impact.ts";
 import { securityPath } from "../query/security.ts";
 import { contextPack, packToToon, measureTokenDelta } from "../query/context-pack.ts";
+import { search, type SearchOutput } from "../query/workflow.ts";
 import { encodeToon } from "../serializers/toon.ts";
 
 const CONFIDENCE_NOTE =
@@ -46,6 +47,24 @@ const GAP_NOTE =
   "Results include an UNKNOWN/gaps section listing call sites the engine could " +
   "not resolve. It is never empty because nothing was found — it is empty only " +
   "when nothing was missed. Read it before concluding a path is complete.";
+
+/**
+ * Ranking is not confidence, and it must not be reported as a number.
+ *
+ * `SearchCandidate` carries an RRF score, a bm25 and a cosine. A model shown
+ * `0.0163` reads it as a probability of being right, which it is not — it is a
+ * position in a list. So the tool emits an ordinal rank and the names of the
+ * signals that agreed, and no magnitude at all. The raw values stay on the CLI
+ * `--json` path, where a human is diagnosing the retrieval rather than acting
+ * on it.
+ */
+const RANKING_NOTE =
+  "The order is a RANKING, not a confidence: it says which indexed rows your " +
+  "words matched best, never that the top row is what you meant. Candidates " +
+  "report an ordinal rank and which retrieval signals agreed; no score is " +
+  "given, because a number here would be read as a probability and it is not " +
+  "one. An empty result means your words did not match the index — it is " +
+  "never evidence that the behaviour does not exist.";
 
 export const TOOLS = [
   {
@@ -135,6 +154,42 @@ export const TOOLS = [
         includeSource: { type: "boolean", description: "Include the seed's raw source. Default true. Set false for the smallest pack." },
       },
       required: ["symbol"],
+    },
+  },
+  {
+    name: "search",
+    description:
+      "Search the CODE GRAPH — symbols, routes and files the engine indexed — " +
+      "not the filesystem. It returns candidate SEEDS to pass to the other " +
+      "tools, never file contents. Use it when you have a phrase rather than a " +
+      "symbol: it is the way in when you do not already know what something is " +
+      "called. " +
+      `${RANKING_NOTE} ` +
+      "Business names usually do not appear in identifiers. On this corpus " +
+      "'GRN creation' matches nothing while POST /api/v1/grn exists, because " +
+      "the only place that feature is named is the URL. For a business " +
+      "capability rather than a code identifier, prefer feature_pack, which " +
+      "consults a reviewed manifest before falling back to this search.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        phrase: { type: "string", description: "What to look for, in your own words." },
+        topK: { type: "number", description: "Candidates to return. Default 8." },
+        kinds: {
+          type: "array",
+          items: { type: "string", enum: ["symbol", "route", "file"] },
+          description:
+            "Restrict to these node kinds. Applied before the top-K cut, so a " +
+            "route ranked below K can still surface.",
+        },
+        seed: {
+          type: "string",
+          description:
+            "A verbatim node key to use instead of the ranking, when you " +
+            "already know which candidate is right.",
+        },
+      },
+      required: ["phrase"],
     },
   },
 ] as const;
@@ -264,6 +319,23 @@ export function callTool(store: FactStore, name: string, args: Args): string {
       }
     }
 
+    case "search": {
+      // No try/catch: `search` reports `notBuilt` and a `reason` rather than
+      // throwing, so every outcome is already an answer the model can act on.
+      const kinds = Array.isArray(args["kinds"])
+        ? (args["kinds"] as unknown[]).filter(
+          (k): k is "symbol" | "route" | "file" =>
+            k === "symbol" || k === "route" || k === "file",
+        )
+        : undefined;
+      const seed = typeof args["seed"] === "string" ? args["seed"] : undefined;
+      return encodeToon(searchForModel(search(store, str(args, "phrase"), {
+        topK: num(args, "topK"),
+        kinds: kinds && kinds.length > 0 ? kinds : undefined,
+        correctedSeed: seed,
+      })));
+    }
+
     default:
       return encodeToon({
         error: `unknown tool "${name}"`,
@@ -285,6 +357,46 @@ function kindsBy(coverage: Record<string, string[]>, channel: string): string {
 }
 
 /** Flatten a flow for a model: the tree as indented rows, not nested objects. */
+/**
+ * Search output for a model: ordinals and signal names, never magnitudes.
+ *
+ * `SearchCandidate` carries `score`, `bm25` and `cosine`, and none of the three
+ * crosses this boundary — see RANKING_NOTE. `signals` keeps what the numbers
+ * were evidence OF (which retrieval channels agreed) without the number that
+ * would be mistaken for a confidence.
+ */
+function searchForModel(out: SearchOutput): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    phrase: out.phrase,
+    indexBuilt: !out.notBuilt,
+    chosen: out.chosen?.nodeKey ?? "",
+    chosenKind: out.chosen?.kind ?? "",
+    follow: out.follow?.query ?? "",
+    followArg: out.follow
+      ? out.follow.query === "impact"
+        ? out.follow.seed
+        : `${out.follow.service} ${out.follow.method} ${out.follow.url}`
+      : "",
+    reason: out.reason,
+    candidates: out.candidates.map((c, i) => ({
+      rank: i + 1,
+      kind: c.kind,
+      display: c.display,
+      where: c.where,
+      signals: c.sources.join("+"),
+      key: c.nodeKey,
+    })),
+  };
+  // A miss is a result, so it gets the next move rather than an empty table.
+  if (out.candidates.length === 0 && !out.notBuilt) {
+    body["hint"] =
+      "Nothing matched. A business capability is usually not spelled in the " +
+      "code — try feature_pack with the same phrase, which checks a reviewed " +
+      "manifest first.";
+  }
+  return body;
+}
+
 function flowForModel(flow: ReturnType<typeof endpointFlow>): Record<string, unknown> {
   const chainRows: Array<Record<string, unknown>> = [];
   const treeRows: Array<Record<string, unknown>> = [];
