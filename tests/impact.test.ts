@@ -377,3 +377,60 @@ describe("cross-service", () => {
     } finally { store.close(); }
   });
 });
+
+// ---------------------------------------------------------------------------
+// P3-T7 (R80) — a symbol's file node must be its OWN repo's
+// ---------------------------------------------------------------------------
+describe("file attribution is scoped to the seed's repo", () => {
+  // The defect this pins: `fileNodeFor` matched `key LIKE '%/' || path` with no
+  // repo filter and broke the tie by key length. In a monorepo the same
+  // relative path exists in every service, and on the real corpus
+  // `40-kri-router/server.js` and `41-kri-engine/server.js` are both 23
+  // characters — so rowid decided it, the router always won, and all 443
+  // engine symbols reported the router's file-scoped config and none of their
+  // own. Confidently wrong in both directions at once.
+  // The two repo names are chosen, not incidental. `ORDER BY LENGTH(key)` ties
+  // on equal-length keys and SQLite then returns them in key order, so the seed
+  // must live in the repo whose key sorts SECOND for the unscoped query to pick
+  // the wrong one. That is the real corpus exactly: `40-kri-router` sorts
+  // before `41-kri-engine`, and the router won all 443 times. Naming them the
+  // other way round makes the buggy query accidentally right and the test green
+  // against the defect it exists to catch.
+  test("two repos with the same file path do not borrow each other's coupling", () => {
+    const store = new FactStore(join(dir, "repo-scope.db"));
+    try {
+      const first = ctx(store, "40-router");
+      const second = ctx(store, "41-engine");
+
+      const firstFile = first.node("file", "40-router/server.js");
+      const secondFile = second.node("file", "41-engine/server.js");
+      assert.equal(
+        "40-router/server.js".length, "41-engine/server.js".length,
+        "the keys must tie on length, or LENGTH() would decide it correctly",
+      );
+
+      const firstEnv = first.node("config", "env:ROUTER_ONLY");
+      const secondEnv = second.node("config", "env:ENGINE_ONLY");
+      for (const [src, dst, c] of [
+        [firstFile, firstEnv, first], [secondFile, secondEnv, second],
+      ] as const) {
+        store.insertEdge({
+          srcNodeId: src, dstNodeId: dst, type: "READS_CONFIG",
+          confidence: "inferred", evidenceKind: "treesitter",
+          fileId: c.fileId, line: 1, runId: c.runId,
+        });
+      }
+
+      second.sym("validatePo");
+      const seedKey = SYM("41-engine", "validatePo");
+      assert.equal(
+        resolveSeed(store, seedKey).fileNodeId, secondFile,
+        "the seed's file node is its own repo's, not the one that sorts first",
+      );
+
+      const keys = impact(store, seedKey).configuration.map((c) => c.key);
+      assert.deepEqual(keys, ["env:ENGINE_ONLY"]);
+      assert.ok(!keys.includes("env:ROUTER_ONLY"), "no borrowed coupling");
+    } finally { store.close(); }
+  });
+});

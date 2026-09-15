@@ -696,6 +696,7 @@ rather than covering for each other.
 | P3-T4 Joern/Opengrep side-car | — | not started |
 | P3-T5 additional languages | — | not started |
 | **P3-T6 `search` over MCP (R79)** | `—` | **done** |
+| **P3-T7 repo-scoped file attribution (R80)** | `—` | **done — bug fix** |
 
 The P3-T2 row above is stale: OPEN-8 was closed with a decision and the feature
 shipped — see the narrative entry below and commits `a99eb5b` / `4cf32e9`.
@@ -971,3 +972,55 @@ six GRN routes across both services, ranks 1-6. And the finding that justifies
 the next task: **`search "GRN creation"` matches nothing** — the `and` aspect
 needs every token and no indexed row contains "creation". The only place that
 feature is named is the URL. 465 tests pass; typecheck clean.
+
+---
+
+## P3-T7 — the seed's file node belongs to the seed's repo
+
+Found while designing the feature pack, which leans on file-scoped attribution
+harder than anything before it. `fileNodeFor` resolved a symbol's owning file
+with `key LIKE '%/' || path ORDER BY LENGTH(key) LIMIT 1` — **no repo filter.**
+In a monorepo the same relative path exists in every service, so the answer was
+decided by a length tiebreak, and on ties SQLite returns key order:
+
+```
+40-kri-router/server.js   len=23   repo=1   <- always won
+41-kri-engine/server.js   len=23   repo=2
+symbols:  router 171      engine 443
+file-node edges:  router 7          engine 25
+```
+
+So for **443 of the corpus's 789 symbols**, the `configuration` and
+`datastores` sections of both `impact` and `context_pack` reported the
+*router's* seven file-scoped edges and none of the engine's twenty-five. A
+false positive and a false negative in the same answer, presented with the same
+confidence as everything else — the failure mode this project is named after
+avoiding.
+
+**Fixed** by threading `nodes.repo_id` through all three seed lookups into
+`fileNodeFor`, which now filters on it. A node with no repo keeps the old
+unscoped query, documented as the degenerate case rather than silently
+returning nothing.
+
+`dumpBaseline(store, paths)` is extracted from `measureTokenDelta` and accepts
+repo-qualified paths (`41-kri-engine/server.js`) as well as bare ones, because
+the bare form has exactly the ambiguity just fixed. `measureTokenDelta` keeps
+its signature and becomes a wrapper — no test churn.
+
+**Verified on the corpus.** `context validatePO` (a symbol unique to the
+engine) before: the router's `ENGINE_BASE_URL` / `PROCUREMENT_BASE_URL`, and
+`datastores` **empty**. After: the engine's five `DATABASE_*` vars plus
+`INTEGRATION_KEY`, `PORT`, `SERVICE_TOKEN`, and all four engine tables —
+`bills`, `goods_receipts`, `purchase_orders`, `users`, read and written.
+
+**The regression test earns its keep the hard way.** The first version passed
+against the unfixed code: on a length tie SQLite happened to return the seed's
+own repo first, so the buggy query was accidentally right. The repo names are
+now chosen so the *wrong* one sorts first — `40-router` before `41-engine`,
+mirroring the corpus — and the test fails with `actual: 1, expected: 2` when
+the scope is removed. A regression test that cannot go red is a comment.
+
+**What it does not do.** Nothing detects the reverse case: two files with the
+same path in the same repo cannot exist, but a symbol whose `files` row was
+written by a different run than its `nodes` row would still resolve by path
+alone. 466 tests pass; typecheck clean.

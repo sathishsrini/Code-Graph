@@ -165,6 +165,21 @@ export class SeedNotFound extends Error {
 // ---------------------------------------------------------------------------
 
 /**
+ * One row of the three seed lookups. `repoId` is what scopes the file node.
+ *
+ * A type alias rather than an interface on purpose: only aliases get an
+ * implicit index signature, which is what lets `node:sqlite`'s
+ * `Record<string, SQLOutputValue>` rows be cast to it directly.
+ */
+type SeedRow = {
+  id: number;
+  kind: string;
+  key: string;
+  repoId: number | null;
+  file: string | null;
+};
+
+/**
  * Resolve a human-typed seed to one node.
  *
  * Accepts a verbatim SCIP symbol (what a tool passes) or a bare display name
@@ -175,9 +190,7 @@ export class SeedNotFound extends Error {
 export function resolveSeed(store: FactStore, query: string): ImpactSeed {
   const db = store.raw();
 
-  const build = (
-    row: { id: number; kind: string; key: string; file: string | null },
-  ): ImpactSeed => ({
+  const build = (row: SeedRow): ImpactSeed => ({
     nodeId: row.id,
     kind: row.kind,
     key: row.key,
@@ -185,32 +198,32 @@ export function resolveSeed(store: FactStore, query: string): ImpactSeed {
     file: row.file,
     // A symbol's owning file. Config reads and SQL literals attribute to the
     // file when no non-namespace definition contains them, so without this the
-    // configuration and data sections are empty for every symbol seed.
+    // configuration and data sections are empty for every symbol seed. The
+    // repo travels with it — see `fileNodeFor`.
     fileNodeId: row.kind === "file"
       ? row.id
-      : fileNodeFor(store, row.file),
+      : fileNodeFor(store, row.repoId ?? null, row.file),
   });
 
   // 1. A verbatim node key — a SCIP symbol, a route key, `env:X`, a file key.
   const exact = db.prepare(
-    `SELECT n.id, n.kind, n.key, f.path AS file
+    `SELECT n.id, n.kind, n.key, n.repo_id AS repoId, f.path AS file
        FROM nodes n
        LEFT JOIN symbols s ON s.node_id = n.id
        LEFT JOIN files f ON f.id = s.file_id
       WHERE n.key = ?`,
-  ).get(query) as { id: number; kind: string; key: string; file: string | null } | undefined;
+  ).get(query) as SeedRow | undefined;
   if (exact) return build(exact);
 
   // 2. A file, by repo-relative path or by its `<repo>/<path>` node key. The
   //    corpus attributes every datastore and config edge to a file, so asking
   //    about one is the only way to reach R38's data dependency here.
   const asFile = db.prepare(
-    `SELECT n.id, n.kind, n.key, ? AS file
+    `SELECT n.id, n.kind, n.key, n.repo_id AS repoId, ? AS file
        FROM nodes n
       WHERE n.kind = 'file' AND (n.key = ? OR n.key LIKE '%/' || ?)
       ORDER BY LENGTH(n.key)`,
-  ).all(query, query, query) as
-    Array<{ id: number; kind: string; key: string; file: string | null }>;
+  ).all(query, query, query) as SeedRow[];
   if (asFile.length === 1) return build(asFile[0]!);
   if (asFile.length > 1) {
     throw new SeedNotFound(query, asFile.map((f) => ({ key: f.key, display: f.key })));
@@ -218,13 +231,13 @@ export function resolveSeed(store: FactStore, query: string): ImpactSeed {
 
   // 3. A bare display name.
   const candidates = db.prepare(
-    `SELECT n.id, n.kind, n.key, f.path AS file
+    `SELECT n.id, n.kind, n.key, n.repo_id AS repoId, f.path AS file
        FROM nodes n
        JOIN symbols s ON s.node_id = n.id
        LEFT JOIN files f ON f.id = s.file_id
       WHERE s.display_name = ?
       ORDER BY n.key`,
-  ).all(query) as Array<{ id: number; kind: string; key: string; file: string | null }>;
+  ).all(query) as SeedRow[];
 
   if (candidates.length === 1) return build(candidates[0]!);
 
@@ -233,12 +246,35 @@ export function resolveSeed(store: FactStore, query: string): ImpactSeed {
   })));
 }
 
-/** The `file` node whose key ends in this repo-relative path. */
-function fileNodeFor(store: FactStore, path: string | null): number | null {
+/**
+ * The `file` node whose key ends in this repo-relative path, IN THIS REPO.
+ *
+ * The repo filter is the whole point. Without it the lookup was
+ * `key LIKE '%/' || path ORDER BY LENGTH(key) LIMIT 1`, and in a monorepo the
+ * same relative path exists in every service. On this corpus
+ * `40-kri-router/server.js` and `41-kri-engine/server.js` are both 23
+ * characters, so the length tiebreak is decided by rowid and the router always
+ * won — for all 443 engine symbols, the config and datastore sections reported
+ * the *router's* seven file-scoped edges and none of the engine's twenty-five.
+ * A false positive and a false negative in the same answer.
+ */
+function fileNodeFor(
+  store: FactStore, repoId: number | null, path: string | null,
+): number | null {
   if (!path) return null;
+  if (repoId === null) {
+    // Degenerate case: a node with no repo. Ambiguous by construction, so this
+    // keeps the old behaviour rather than returning nothing.
+    const row = store.raw().prepare(
+      "SELECT id FROM nodes WHERE kind = 'file' AND key LIKE '%/' || ? ORDER BY LENGTH(key) LIMIT 1",
+    ).get(path) as { id: number } | undefined;
+    return row?.id ?? null;
+  }
   const row = store.raw().prepare(
-    "SELECT id FROM nodes WHERE kind = 'file' AND key LIKE '%/' || ? ORDER BY LENGTH(key) LIMIT 1",
-  ).get(path) as { id: number } | undefined;
+    `SELECT id FROM nodes
+      WHERE kind = 'file' AND repo_id = ? AND key LIKE '%/' || ?
+      ORDER BY LENGTH(key) LIMIT 1`,
+  ).get(repoId, path) as { id: number } | undefined;
   return row?.id ?? null;
 }
 

@@ -360,6 +360,51 @@ export interface TokenDelta {
   ratio: number;
 }
 
+/**
+ * How big the files behind a pack are, on disk — R71's denominator.
+ *
+ * Accepts both a bare repo-relative path (`server.js`) and a repo-qualified
+ * one (`41-kri-engine/server.js`). The qualified form is what a `file` node's
+ * key looks like, and it is the only form that is unambiguous: this corpus has
+ * two `server.js` files, so the bare path alone picks whichever repo SQLite
+ * reaches first — the same ambiguity that made `fileNodeFor` report the wrong
+ * service's coupling before P3-T7.
+ */
+export function dumpBaseline(
+  store: FactStore, paths: Iterable<string>,
+): { chars: number; files: number } {
+  const byPath = store.raw().prepare(
+    `SELECT r.root_path FROM files f JOIN repos r ON r.id = f.repo_id
+      WHERE f.path = ? LIMIT 1`,
+  );
+  const byRepoAndPath = store.raw().prepare(
+    `SELECT r.root_path FROM files f JOIN repos r ON r.id = f.repo_id
+      WHERE r.name = ? AND f.path = ? LIMIT 1`,
+  );
+
+  let chars = 0;
+  let files = 0;
+  for (const spec of new Set(paths)) {
+    const cut = spec.indexOf("/");
+    let root: string | undefined;
+    let path = spec;
+    if (cut > 0) {
+      const row = byRepoAndPath.get(spec.slice(0, cut), spec.slice(cut + 1)) as
+        { root_path: string } | undefined;
+      if (row) { root = row.root_path; path = spec.slice(cut + 1); }
+    }
+    if (root === undefined) {
+      root = (byPath.get(spec) as { root_path: string } | undefined)?.root_path;
+    }
+    if (root === undefined) continue;
+    try {
+      chars += readFileSync(join(root, path), "utf8").length;
+      files += 1;
+    } catch { /* a file that cannot be read is not part of the baseline */ }
+  }
+  return { chars, files };
+}
+
 export function measureTokenDelta(
   store: FactStore, pack: ContextPack,
 ): TokenDelta {
@@ -370,23 +415,9 @@ export function measureTokenDelta(
     if (file && file.includes(".")) paths.add(file);
   }
 
-  let dumpChars = 0;
-  let files = 0;
-  const rootOf = store.raw().prepare(
-    `SELECT r.root_path FROM files f JOIN repos r ON r.id = f.repo_id
-      WHERE f.path = ? LIMIT 1`,
-  );
-  for (const path of paths) {
-    const row = rootOf.get(path) as { root_path: string } | undefined;
-    if (!row) continue;
-    try {
-      dumpChars += readFileSync(join(row.root_path, path), "utf8").length;
-      files += 1;
-    } catch { /* a file that cannot be read is not part of the baseline */ }
-  }
-
+  const { chars, files } = dumpBaseline(store, paths);
   const packTokens = estimateTokens(packToToon(pack));
-  const dumpTokens = estimateTokens("x".repeat(dumpChars));
+  const dumpTokens = estimateTokens("x".repeat(chars));
   return {
     packTokens,
     dumpTokens,
