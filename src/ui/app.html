@@ -31,7 +31,8 @@
   body {
     margin: 0; background: var(--bg); color: var(--text);
     font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-    display: grid; grid-template-columns: 260px 1fr 340px; height: 100vh;
+    display: grid; grid-template-columns: var(--side-left) 4px 1fr 4px var(--side-right);
+    height: 100vh;
   }
   aside, #inspector {
     background: var(--panel); border-right: 1px solid var(--border);
@@ -39,6 +40,13 @@
   }
   #inspector { border-right: none; border-left: 1px solid var(--border);
                overflow-x: auto; }
+  .resize-handle {
+    cursor: col-resize; background: transparent;
+    transition: background .15s;
+  }
+  .resize-handle:hover, .resize-handle.dragging {
+    background: var(--certain);
+  }
   main { position: relative; overflow: hidden; }
   h1 { font-size: 13px; margin: 0 0 10px; letter-spacing: .04em; }
   h2 { font-size: 11px; color: var(--dim); margin: 16px 0 6px;
@@ -127,11 +135,15 @@
   <div id="routes"></div>
 </aside>
 
+<div class="resize-handle" data-col="0" title="drag to resize"></div>
+
 <main>
   <svg id="canvas"><g id="viewport"></g></svg>
   <div id="empty">pick a route</div>
   <div id="legend"></div>
 </main>
+
+<div class="resize-handle" data-col="1" title="drag to resize"></div>
 
 <aside id="inspector"><p class="k">Select a node.</p></aside>
 
@@ -773,6 +785,49 @@ function applyView() {
     view.k = Math.min(3, Math.max(0.15, view.k * factor));
     applyView();
   }, { passive: false });
+})();
+
+(function () {
+  // Sidebar widths, tracked in px. The grid slots are
+  //   left | handle | main | handle | right
+  // `--side-left` / `--side-right` feed grid-template-columns.
+  const sizes = { left: 260, right: 340 };
+  const docs = document.documentElement;
+  const MIN = 160;
+  const apply = () => {
+    docs.style.setProperty("--side-left", `${sizes.left}px`);
+    docs.style.setProperty("--side-right", `${sizes.right}px`);
+  };
+  apply();
+
+  for (const handle of document.querySelectorAll(".resize-handle")) {
+    handle.addEventListener("mousedown", (down) => {
+      if (down.button !== 0) return;
+      down.preventDefault();
+      const side = handle.dataset.col === "0" ? "left" : "right";
+      handle.classList.add("dragging");
+      docs.style.cursor = "col-resize";
+      docs.style.userSelect = "none";
+
+      const move = (e) => {
+        const d = e.clientX - down.clientX;
+        const limit = Math.max(window.innerWidth * 0.5, MIN);
+        sizes[side] = side === "left"
+          ? Math.min(limit, Math.max(MIN, sizes.left + d))
+          : Math.min(limit, Math.max(MIN, sizes.right - d));
+        apply();
+      };
+      const up = () => {
+        handle.classList.remove("dragging");
+        docs.style.cursor = "";
+        docs.style.userSelect = "";
+        removeEventListener("mousemove", move);
+        removeEventListener("mouseup", up);
+      };
+      addEventListener("mousemove", move);
+      addEventListener("mouseup", up);
+    });
+  }
 })();
 
 // ---------------------------------------------------------------------------

@@ -41,17 +41,21 @@ export interface UiServer {
 }
 
 export async function startUi(store: FactStore, options: UiOptions = {}): Promise<UiServer> {
-  const html = readFileSync(join(HERE, "app.html"), "utf8");
   // Served from node_modules rather than a CDN so the viewer works offline and
-  // pins the same version the tests ran against.
+  // pins the same version the tests ran against. Read once: node_modules never
+  // changes under a running viewer.
   const elk = readFileSync(require.resolve("elkjs/lib/elk.bundled.js"), "utf8");
+  // Read per request, not at startup: the viewer is the one long-running
+  // process whose HTML/CSS/JS the author edits, and pinning it at boot made
+  // every UI change need a server restart to be seen.
+  const html = () => readFileSync(join(HERE, "app.html"), "utf8");
 
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     try {
       if (url.pathname === "/" || url.pathname === "/index.html") {
-        return send(res, 200, "text/html; charset=utf-8", html);
+        return send(res, 200, "text/html; charset=utf-8", html());
       }
       if (url.pathname === "/elk.js") {
         return send(res, 200, "text/javascript; charset=utf-8", elk);
