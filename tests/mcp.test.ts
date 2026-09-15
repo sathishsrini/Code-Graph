@@ -83,7 +83,7 @@ describe("the tool contract", () => {
   test("the exposed tool set is exactly what is documented", () => {
     assert.deepEqual(
       TOOLS.map((t) => t.name).sort(),
-      ["context_pack", "endpoint_flow", "impact", "search", "security_path"],
+      ["context_pack", "endpoint_flow", "feature_pack", "impact", "search", "security_path"],
     );
   });
 
@@ -308,5 +308,85 @@ describe("search over MCP", () => {
       tool.description.includes("never evidence"),
       "an empty result is not proof of absence",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// feature_pack (P3-T12) — the whole supplier behind one tool call
+// ---------------------------------------------------------------------------
+describe("feature_pack over MCP", () => {
+  // `entries` bypasses the on-disk manifest, which names corpus nodes this
+  // fixture store does not have.
+  const call = (store: FactStore, extra: Record<string, unknown> = {}) =>
+    callTool(store, "feature_pack", {
+      phrase: "the thing",
+      entries: ["scip npm svc 1 `server.js`/handler()."],
+      ...extra,
+    });
+
+  test("one call returns entry points, callees and gaps in one document", () => {
+    const store = seeded("fp.db");
+    try {
+      const out = call(store);
+      assert.ok(out.includes("entrypoints["));
+      assert.ok(out.includes("callees["));
+      assert.ok(out.includes("gaps["), "R61's section, always present");
+      assert.ok(out.includes("tokensVsFileDump"), "and it reports what it replaced");
+    } finally { store.close(); }
+  });
+
+  test("the document defines its vocabulary before using it", () => {
+    const store = seeded("fp-read.db");
+    try {
+      assert.ok(call(store).startsWith("read:"));
+    } finally { store.close(); }
+  });
+
+  test("explicit entries are reported as explicit, not as reviewed", () => {
+    // "a person put this in the manifest" and "you passed me a key" are
+    // different provenance and the output must not blur them.
+    const store = seeded("fp-origin.db");
+    try {
+      assert.ok(call(store).includes("matchedBy: explicit"));
+    } finally { store.close(); }
+  });
+
+  test("a tier can be skipped, but gaps cannot", () => {
+    const store = seeded("fp-skip.db");
+    try {
+      const out = call(store, { skipTiers: ["callees", "gaps"] });
+      assert.ok(!out.includes("callees["), "the skip was honoured");
+      assert.ok(out.includes("gaps["), "gaps ignored it");
+    } finally { store.close(); }
+  });
+
+  test("a tight budget cuts tiers and states the true totals", () => {
+    const store = seeded("fp-budget.db");
+    try {
+      const out = call(store, { budget: 120 });
+      assert.ok(
+        out.includes("truncated[") || out.includes("droppedForBudget["),
+        "the cut is named, never silent",
+      );
+      assert.ok(out.includes("gaps["));
+    } finally { store.close(); }
+  });
+
+  test("its description carries both caveats a reader could conflate", () => {
+    // The cfg guard path is syntactic; the prose is model output. A model that
+    // reads either as the other has merged evidence kinds this engine keeps apart.
+    const tool = TOOLS.find((t) => t.name === "feature_pack")!;
+    assert.ok(tool.description.includes("SYNTACTIC guard path"));
+    assert.ok(tool.description.includes("MODEL-GENERATED"));
+    assert.ok(tool.description.includes("never cut"), "and that gaps always survive");
+  });
+
+  test("a phrase matching nothing still returns a document, not an error", () => {
+    const store = seeded("fp-miss.db");
+    try {
+      const out = callTool(store, "feature_pack", { phrase: "no such capability" });
+      assert.ok(!out.startsWith("error"));
+      assert.ok(out.includes("unresolvedSeeds") || out.includes("matchedBy"));
+    } finally { store.close(); }
   });
 });

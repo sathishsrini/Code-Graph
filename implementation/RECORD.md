@@ -701,6 +701,7 @@ rather than covering for each other.
 | **P3-T9 multi-seed feature pack (R82)** | `—` | **done** |
 | **P3-T10 cfg + prose tiers (R83)** | `—` | **done** |
 | **P3-T11 impact tier (R84)** | `—` | **done** |
+| **P3-T12 `feature_pack` MCP tool** | `—` | **done — GOAL 2 REACHED** |
 
 The P3-T2 row above is stale: OPEN-8 was closed with a decision and the feature
 shipped — see the narrative entry below and commits `a99eb5b` / `4cf32e9`.
@@ -1276,3 +1277,58 @@ through `HANDLES` reports `fanIn=0` beside a non-zero route count — accurate,
 but it reads oddly. A file-node seed produces a `fanIn=0 · routes=0` verdict
 that is true and uninformative. Runtime coupling is still reported as absent by
 construction, because P2-T8's traces have no producer on this corpus.
+
+---
+
+## P3-T12 — goal 2, in one tool call
+
+This project has two goals. Goal 1 — a developer understands flow and blast
+radius from a graphical view — closed with the flowchart work. Goal 2 is the
+context supplier: an AI gets only what it needs, structured and categorised,
+instead of reading the codebase. `feature_pack` is that, and the MCP server now
+exposes six tools rather than four.
+
+```
+$ echo '{"name":"feature_pack","arguments":{"phrase":"GRN creation"}}'
+read: certain=… inferred=… · 'when' is a SYNTACTIC guard path, not a trace
+feature: GRN creation        matchedBy: id        manifest: rules/features.yml
+notes: The router has no GRN handler of its own - it special-cases the path
+       inside proxyToEngine. See the cfg tier for the branch.
+seeds[5]  entrypoints[5]  security[2]  callees[6]  cfg[20]  impact[32]
+config[15]  datastores[8]  transitive[3]  gaps[9]
+tokensVsFileDump: 25%   filesThisReplaces: 3
+```
+
+**The document opens by defining its vocabulary.** A legend at the end is a
+legend the reader meets after they have already read `inferred` as fact. The
+`read:` line carries the confidence values, the `[file-scope]` caveat, and —
+when the tier is present — the statement that a `cfg` guard path is syntactic
+rather than an execution trace.
+
+**Prose needs two passes and that is deliberate.** The packer cannot reach the
+LLM cache (R63, enforced by the containment grep), so the tool packs once to
+learn which seeds resolved, asks `collectProse` about exactly those nodes, and
+re-packs with the notes injected. The alternative — letting the packer read the
+cache itself — is the thing the structural rule exists to prevent.
+
+**A malformed manifest is an error with a fix, not silence.** If
+`rules/features.yml` fails to parse, the tool says so and names
+`features check`. Falling back to search would make a broken manifest look like
+"this feature was never listed".
+
+**What the four-tool gate becomes.** The R48 assertion was one `deepEqual` over
+the tool names, which conflated "you removed a required tool" with "you added
+one". It is now two tests: the four R48 names must all still be present, and the
+full set must be exactly what is documented.
+
+**Verified over the real stdio transport**, not just `callTool`: `tools/list`
+returns six, and `tools/call feature_pack {"phrase":"GRN creation"}` returns the
+document above. 522 tests pass; typecheck clean.
+
+**What it does not do.** `context_pack` does not yet delegate to `featurePack`
+with a single seed, so two packers exist — a smell, and a future task, but
+changing P1-T15's working contract mid-slice is the worse risk. The manifest
+path is not configurable over MCP (the CLI's `--features` is). And nothing
+measures whether a manifest entry is *sufficient*: a feature naming one of its
+three entry points yields a confident, thinner pack and says nothing about the
+two it left out.

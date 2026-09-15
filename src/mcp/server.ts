@@ -35,6 +35,11 @@ import { impact, SeedNotFound } from "../query/impact.ts";
 import { securityPath } from "../query/security.ts";
 import { contextPack, packToToon, measureTokenDelta } from "../query/context-pack.ts";
 import { search, type SearchOutput } from "../query/workflow.ts";
+import {
+  featurePack, featurePackToToon, measureFeatureDelta, type FeatureTier,
+} from "../query/feature-pack.ts";
+import { collectProse } from "../llm/prose-tier.ts";
+import { loadFeatures, DEFAULT_FEATURES_PATH } from "../config/features.ts";
 import { encodeToon } from "../serializers/toon.ts";
 
 const CONFIDENCE_NOTE =
@@ -192,6 +197,56 @@ export const TOOLS = [
       required: ["phrase"],
     },
   },
+  {
+    name: "feature_pack",
+    description:
+      "Everything needed to change one BUSINESS FEATURE, as a single " +
+      "token-budgeted document: its entry points across every service, the " +
+      "security checks on them, the decision branches inside the handlers, " +
+      "what they call, what else breaks if you change them, the config and " +
+      "datastores they touch, and the gaps. " +
+      "Use this when you have a capability in mind rather than a symbol — " +
+      "'GRN creation', 'PO approval'. It checks a human-reviewed manifest " +
+      "first and falls back to lexical search, and the output says which " +
+      "answered: a manifest entry was reviewed by a person, a search hit was " +
+      "not. " +
+      `${CONFIDENCE_NOTE} ${GAP_NOTE} ` +
+      "Two sections carry their own caveat and neither may be read as the " +
+      "other. The cfg tier's 'when' is a SYNTACTIC guard path — which arm of " +
+      "which enclosing branch a row sits in — not an execution trace. The " +
+      "prose section is MODEL-GENERATED and is not extracted fact; every " +
+      "other section came from a compiler, a boot dump or a parser. " +
+      "Tiers too large for the budget are cut, never silently: the output " +
+      "reports the number shown and the true total. The gaps section is " +
+      "never cut.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        phrase: { type: "string", description: "The feature, in the words people use for it." },
+        entries: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Verbatim node keys to use as entry points, overriding both the " +
+            "manifest and search. Use when you already know where a feature starts.",
+        },
+        budget: { type: "number", description: "Token budget. Default 12000." },
+        maxSeeds: { type: "number", description: "Entry points to follow. Default 6." },
+        skipTiers: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: [
+              "entrypoints", "security", "callees", "cfg", "callers", "impact",
+              "config", "datastores", "transitive", "prose",
+            ],
+          },
+          description: "Tiers to omit, to spend the budget elsewhere. 'gaps' cannot be skipped.",
+        },
+      },
+      required: ["phrase"],
+    },
+  },
 ] as const;
 
 type Args = Record<string, unknown>;
@@ -334,6 +389,52 @@ export function callTool(store: FactStore, name: string, args: Args): string {
         kinds: kinds && kinds.length > 0 ? kinds : undefined,
         correctedSeed: seed,
       })));
+    }
+
+    case "feature_pack": {
+      const entries = Array.isArray(args["entries"])
+        ? (args["entries"] as unknown[]).filter((e): e is string => typeof e === "string")
+        : undefined;
+      const skipTiers = Array.isArray(args["skipTiers"])
+        ? (args["skipTiers"] as unknown[]).filter((t): t is FeatureTier => typeof t === "string")
+        : undefined;
+
+      let manifest = null;
+      try {
+        manifest = loadFeatures(DEFAULT_FEATURES_PATH);
+      } catch (e) {
+        // A malformed manifest must not look like "this feature is not listed".
+        return encodeToon({
+          error: `${DEFAULT_FEATURES_PATH}: ${(e as Error).message}`,
+          fix: "run `node src/cli.ts features check`",
+        });
+      }
+
+      // Seeds first, so the prose lookup asks about the nodes this pack is
+      // actually built on. The packer itself has no path to that cache.
+      const first = featurePack(store, str(args, "phrase"), {
+        budget: num(args, "budget"),
+        maxSeeds: num(args, "maxSeeds"),
+        entries: entries && entries.length > 0 ? entries : undefined,
+        skipTiers, manifest,
+      });
+      const prose = skipTiers?.includes("prose")
+        ? []
+        : collectProse(store, first.seeds.map((s) => s.seed.key));
+
+      const pack = prose.length === 0 ? first : featurePack(store, str(args, "phrase"), {
+        budget: num(args, "budget"),
+        maxSeeds: num(args, "maxSeeds"),
+        entries: entries && entries.length > 0 ? entries : undefined,
+        skipTiers, manifest, prose,
+      });
+
+      const delta = measureFeatureDelta(store, pack);
+      return `${featurePackToToon(pack)}${encodeToon({
+        tokensVsFileDump: `${(delta.ratio * 100).toFixed(0)}%`,
+        filesThisReplaces: delta.files,
+      })}
+`;
     }
 
     default:
