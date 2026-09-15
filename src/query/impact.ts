@@ -281,12 +281,24 @@ function fileNodeFor(
 export function impact(
   store: FactStore, query: string, options: ImpactOptions = {},
 ): ImpactReport {
+  return impactFrom(store, resolveSeed(store, query), options);
+}
+
+/**
+ * The same report, from a seed that is already resolved.
+ *
+ * `feature-pack.ts` (P3-T9) holds `ImpactSeed`s it resolved once, across
+ * several entry points. Handing them back as strings so this could re-resolve
+ * them would re-run the ambiguity check per seed and could, for a bare display
+ * name, land on a different node than the one the pack is built around.
+ */
+export function impactFrom(
+  store: FactStore, seed: ImpactSeed, options: ImpactOptions = {},
+): ImpactReport {
   const db = store.raw();
   const maxDepth = options.maxDepth ?? 12;
   const utilityFanIn = options.utilityFanIn ?? DEFAULT_UTILITY_FAN_IN;
   const routeLimit = options.routeLimit ?? DEFAULT_ROUTE_LIMIT;
-
-  const seed = resolveSeed(store, query);
 
   const fanIn = (db.prepare(
     `SELECT COUNT(DISTINCT src_node_id) AS n FROM edges

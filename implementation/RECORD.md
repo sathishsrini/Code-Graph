@@ -698,6 +698,7 @@ rather than covering for each other.
 | **P3-T6 `search` over MCP (R79)** | `—` | **done** |
 | **P3-T7 repo-scoped file attribution (R80)** | `—` | **done — bug fix** |
 | **P3-T8 reviewed feature manifest (R81)** | `—` | **done** |
+| **P3-T9 multi-seed feature pack (R82)** | `—` | **done** |
 
 The P3-T2 row above is stale: OPEN-8 was closed with a decision and the feature
 shipped — see the narrative entry below and commits `a99eb5b` / `4cf32e9`.
@@ -1081,3 +1082,80 @@ and the pack says which answered. There is no check that a manifest entry is
 *sufficient*: a feature can name one of its three entry points and nothing
 reports the two it left out. `--entry` is parsed and threaded but has no
 consumer until P3-T9.
+
+---
+
+## P3-T9 — the context supplier, for a feature rather than a function
+
+`context_pack` answers "what do I need to edit this function". A business
+feature is not a function. "GRN creation" spans two services and a front end,
+its router handler is the generic `proxyToEngine` shared by fifteen routes, and
+its engine handler is anonymous — so no single-seed pack expresses it at any
+budget. `feature_pack` takes N seeds and merges them.
+
+**A new module, not an extension.** `contextPack`'s signature, its nine-tier
+order and its tests are untouched; the gatherers are *exported and reused*
+rather than copied, so there is one place where the confidence and file-scope
+rules live. `impactFrom(store, seed, options)` is extracted from `impact()` for
+the same reason — the pack holds resolved seeds and must not hand them back as
+strings to be re-resolved, which for a bare display name could land on a
+different node than the pack is built around.
+
+**Three rules the corpus forced, each of which is wrong to skip.** A route is
+not a symbol — `neighbours()` walks `CALLS` and a route carries `HANDLES`, so a
+route seed alone reaches nothing; routes expand into their chain. A `namespace`
+symbol is not an owner, so those steps are skipped **and recorded as gaps** —
+and when a route expands to no real symbol, which is the engine's entire case,
+the owning **file node** stands in, marked `[file-scope]`. That fallback is the
+only path by which `goods_receipts` appears at all. And a route-derived symbol
+does **not** re-expand its own routes: `proxyToEngine` would otherwise drag in
+all fifteen and the pack would become "the whole service".
+
+**Budget is shared, and tiers are cut rather than dropped.** Two seeds must not
+each get half the depth of one. Items merge before being measured, so a
+duplicate is never paid for, and sort by how many seeds reached them — the
+shared spine survives a tight budget. A tier that does not fit is
+binary-searched to the longest prefix that does and reports `{shown, total}`;
+that is `impact`'s own R39 rule, cut the list and never the count. Reserved and
+never cut: the header, `seeds`, `unresolvedSeeds`, `gaps`. Prose is never
+reserved.
+
+**Seed resolution never throws.** A stale spec becomes an `UnresolvedSeed`
+carrying the candidates `resolveSeed` offered, and the pack still renders.
+
+**Two defects the corpus found that the fixtures would not have.**
+
+1. *The merge key had no `detail`.* A datastore's kind, name and location are
+   identical for a READ and a WRITE, so the two collapsed — and the pack for
+   GRN creation reported that it **reads** `goods_receipts` while never saying
+   it writes it. The write is the entire feature. (The key is JSON rather than
+   a delimiter: no separator is safe against a SCIP signature, and the NUL one
+   tried first made the source file unsearchable by grep.)
+2. *Rule 3 was applied to routes but not to security.* `securityFor` answers
+   "every route that runs this symbol", correctly — which for `proxyToEngine`
+   is fifteen, so a GRN pack listed the checks on `/api/v1/bill` and
+   `/api/v1/po` as part of the feature. A route seed now uses a route-scoped
+   query, and only a directly-named symbol asks the broader question.
+
+**Verified on the corpus.** `feature "GRN creation"` resolves 5 seeds from the
+manifest (both routes, `proxyToEngine` via the router route, the engine's
+`server.js` file node via the anonymous handler, and `GRNPage`), and returns:
+`security` of exactly two rows — `checkUserAuth` on the router's GRN route and
+`serviceAuth` on the engine's, both `inferred`; all eight `datastores` rows
+including the four WRITES; `callees` reaching `forward`, `envelopeError` and
+`checkUserAuth`; 15 config rows across both services; and **9 gaps**, including
+the two chain steps that could not be keyed and `proxyToEngine`'s unresolved
+dynamic dispatch. **1,589 tokens — 13.7% of dumping the three files it covers.**
+Fixing the two defects made the pack both more correct and smaller.
+
+At `--budget 700` the reservation alone spends 691, every optional tier is
+reported with `shown: 0` and its true total, and `seeds` and `gaps` still render.
+
+498 tests pass; typecheck clean.
+
+**What it does not do.** The `cfg` and `impact` tiers are declared in the order
+and empty until P3-T10 and P3-T11. `includeSource` is threaded but the pack
+never reads source — with N seeds the bodies would spend the budget on exactly
+what the structure replaces. Nothing checks a manifest entry is *sufficient*: a
+feature that names one of its three entry points produces a confident, thinner
+pack and says nothing about the two it left out.

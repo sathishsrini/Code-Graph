@@ -54,6 +54,9 @@ import { search, type FollowQuery, type SearchCandidate } from "./query/workflow
 import {
   loadFeatures, matchFeature, DEFAULT_FEATURES_PATH,
 } from "./config/features.ts";
+import {
+  featurePack, featurePackToToon, measureFeatureDelta,
+} from "./query/feature-pack.ts";
 
 const BREAK = String.fromCharCode(10);
 const DEFAULT_DB = ".codeintel/graph.db";
@@ -88,6 +91,7 @@ COMMANDS
   search build        Rebuild the FTS5 seed index from the store (P3-T3)
   search <phrase>     Fuzzy phrase → one seed, then its effects (P3-T3)
   features check      Verify every rules/features.yml entry still resolves (P3-T8)
+  feature <phrase>    Everything needed to change one business feature (P3-T9)
   summaries generate Bottom-up summaries over a LOCAL model, cache-first (P3-T2)
   summaries read <k>  Print a generated summary (never loads the model)
   help                Show this message
@@ -338,6 +342,9 @@ async function main(argv: string[]): Promise<number> {
 
     case "features":
       return cmdFeaturesCheck(options);
+
+    case "feature":
+      return cmdFeature(options, positionals.slice(1).join(" "));
 
     case "mcp":
       // Never returns: the transport owns the process until stdin closes.
@@ -765,6 +772,66 @@ function cmdImpact(options: Options, seed: string): number {
  * `resolveSeed` offered, and exits non-zero — a stale entry must be visible in
  * CI, not discovered as a silently thinner context pack.
  */
+/**
+ * feature — the whole context for one business feature (P3-T9).
+ *
+ * The AI-facing counterpart to `context <symbol>`: that one answers "what do I
+ * need to edit this function", this one answers "what do I need to change GRN
+ * creation", which on this corpus spans two services and has no symbol of its
+ * own. TOON is the output, as with `context` — there is no separate renderer,
+ * because the packed form IS the product.
+ */
+function cmdFeature(options: Options, phrase: string): number {
+  if (!phrase) {
+    process.stderr.write(
+      "feature requires a phrase: node src/cli.ts feature \"GRN creation\"" + BREAK,
+    );
+    return 2;
+  }
+  const store = new FactStore(options.db);
+  try {
+    let manifest = null;
+    try {
+      manifest = loadFeatures(options.features);
+    } catch (e) {
+      // A malformed manifest must not silently become "no manifest" — that
+      // would look like the feature simply was not listed.
+      process.stderr.write(`feature: ${(e as Error).message}` + BREAK);
+      return 1;
+    }
+
+    const pack = featurePack(store, phrase, {
+      budget: options.budget,
+      includeSource: options.noSource ? false : undefined,
+      entries: options.entries.length > 0 ? options.entries : undefined,
+      manifest,
+    });
+
+    if (options.json) {
+      const body = options.measure
+        ? { ...pack, delta: measureFeatureDelta(store, pack) }
+        : pack;
+      process.stdout.write(JSON.stringify(body, null, 2) + BREAK);
+      return 0;
+    }
+
+    process.stdout.write(featurePackToToon(pack));
+    if (options.measure) {
+      const d = measureFeatureDelta(store, pack);
+      process.stdout.write(
+        BREAK +
+        "R71 TOKEN DELTA" + BREAK +
+        `  pack        : ${d.packTokens} tokens` + BREAK +
+        `  file dump   : ${d.dumpTokens} tokens across ${d.files} file(s)` + BREAK +
+        `  ratio       : ${(d.ratio * 100).toFixed(1)}% of dumping the files` + BREAK,
+      );
+    }
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
 function cmdFeaturesCheck(options: Options): number {
   let manifest;
   try {

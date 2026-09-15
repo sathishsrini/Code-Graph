@@ -158,7 +158,11 @@ export function contextPack(
 
 // ---------------------------------------------------------------------------
 
-function neighbours(store: FactStore, nodeId: number, dir: "in" | "out"): PackedItem[] {
+// The gatherers below are exported for `feature-pack.ts` (P3-T9), which runs
+// them once per seed and merges the results. Reusing them is the point: a
+// second copy of "what does this call" would be a second place for the
+// confidence and file-scope rules to drift.
+export function neighbours(store: FactStore, nodeId: number, dir: "in" | "out"): PackedItem[] {
   const [self, other] = dir === "out"
     ? ["src_node_id", "dst_node_id"]
     : ["dst_node_id", "src_node_id"];
@@ -182,7 +186,7 @@ function neighbours(store: FactStore, nodeId: number, dir: "in" | "out"): Packed
 }
 
 /** Routes that run this symbol — either on their chain, or one call away. */
-function routesFor(store: FactStore, nodeId: number): PackedItem[] {
+export function routesFor(store: FactStore, nodeId: number): PackedItem[] {
   return (store.raw().prepare(
     `SELECT DISTINCT r.service_name, r.method, r.url
        FROM routes r
@@ -210,7 +214,7 @@ function routesFor(store: FactStore, nodeId: number): PackedItem[] {
  * local: a handler refactor that drops a sentinel return removes a check, and
  * nothing in the call graph would show it as a deletion.
  */
-function securityFor(store: FactStore, nodeId: number): PackedItem[] {
+export function securityFor(store: FactStore, nodeId: number): PackedItem[] {
   return (store.raw().prepare(
     `SELECT DISTINCT rc.check_kind, rc.name, rc.confidence, rc.evidence_kind,
             r.service_name, r.method, r.url
@@ -233,7 +237,7 @@ function securityFor(store: FactStore, nodeId: number): PackedItem[] {
   }));
 }
 
-function touching(
+export function touching(
   store: FactStore, seed: ImpactSeed, kind: string, types: string[],
 ): PackedItem[] {
   const q = types.map(() => "?").join(", ");
@@ -257,7 +261,7 @@ function touching(
   }));
 }
 
-function transitiveCallees(store: FactStore, nodeId: number): PackedItem[] {
+export function transitiveCallees(store: FactStore, nodeId: number): PackedItem[] {
   return (store.raw().prepare(
     `SELECT DISTINCT n.key, s.signature, f.path AS file, s.start_line AS line
        FROM edges e1
@@ -276,7 +280,7 @@ function transitiveCallees(store: FactStore, nodeId: number): PackedItem[] {
   }));
 }
 
-function gapsFor(store: FactStore, nodeId: number): PackedItem[] {
+export function gapsFor(store: FactStore, nodeId: number): PackedItem[] {
   return (store.raw().prepare(
     `SELECT u.kind, u.target_hint, u.reason, f.path AS file, u.line
        FROM unresolved_calls u
@@ -292,7 +296,7 @@ function gapsFor(store: FactStore, nodeId: number): PackedItem[] {
 }
 
 /** Tier 1's raw source — the seed's own body, and nothing else (R42). */
-function readSeedSource(
+export function readSeedSource(
   store: FactStore, seed: ImpactSeed, roots?: Map<string, string>,
 ): string | null {
   if (!seed.file) return null;
