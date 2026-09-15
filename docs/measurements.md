@@ -641,3 +641,53 @@ second key) is wired and unexercised, and 0 symbols matched.
 ---
 
 **Last Updated**: 2026-09-09
+
+---
+
+## M11 — `feature_pack` on a business feature (P3-T9…T12, R71)
+
+The R71 question asked of a FEATURE rather than a function. Measured against
+the seeded corpus on 2026-09-15, `node src/cli.ts feature "GRN creation" --measure`.
+
+| | pack | file dump | ratio | files |
+|---|---|---|---|---|
+| `context_pack proxyToEngine --no-source` (M9, re-measured) | 974 | 3,774 | **25.8%** | 1 |
+| `feature_pack "GRN creation"` | 2,901 | 11,620 | **25.0%** | 3 |
+
+**The ratio is the wrong headline here, and saying so matters more than the
+number.** A feature pack is not a cheaper context pack — it answers a question
+the context pack cannot answer at all. There is no symbol called `createGrn`;
+the router has no GRN handler; `search "GRN creation"` matches nothing. The
+honest baseline for the feature pack is not "three files" but "an agent
+grepping four repos for a string that does not appear in them", and that has no
+token count.
+
+What the 2,901 tokens contain, and where they go:
+
+| tier | rows | what it answers |
+|---|---|---|
+| `seeds` | 5 | where the feature starts, across 3 services |
+| `entrypoints` | 5 | 2 routes, the shared proxy, a file node, a page |
+| `security` | 2 | `checkUserAuth` (router) · `serviceAuth` (engine), both `inferred` |
+| `callees` | 6 | including the cross-service hop to `51-integration` |
+| `cfg` | 20 | **the `else` branch at `server.js:205` where GRN actually lives** |
+| `impact` | 32 | led by `proxyToEngine · routes=15` — the other 14 that break |
+| `config` | 15 | both services' env coupling |
+| `datastores` | 8 | 4 tables, READ **and** WRITE |
+| `transitive` | 3 | the next ring, signatures only |
+| `gaps` | 9 | 2 unresolved call sites, 5 unkeyable chain steps, 2 named checks |
+
+Three of those tiers did not exist before this slice and two of them were
+already sitting in the database with no delivery path to a model: the CFG
+(migration 011, reaching only the viewer) and the impact segmentation (a
+separate tool call).
+
+**The defects the corpus found were worth more than the ratio.** Fixing the
+merge key and the security scope made the pack simultaneously **more correct
+and 12% smaller** — 1,814 → 1,589 tokens before the `cfg` and `impact` tiers
+were added. A pack that was wrong about whether GRN creation *writes*
+`goods_receipts` was also paying tokens to be wrong.
+
+**Not measured.** Whether an agent given this document produces a better change
+than one given the files. That is the question M9 also left open and it needs a
+task with a real edit and a reviewer, not a token count.
