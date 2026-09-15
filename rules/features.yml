@@ -1,0 +1,39 @@
+# Reviewed feature manifest (task P3-T8, R81).
+#
+# A business feature is a name people use that the code does not contain.
+#
+# On this corpus `search "GRN creation"` matches NOTHING: no indexed row
+# contains "creation", the router's handler is the generic `proxyToEngine`
+# shared by fifteen routes, and the engine's handler is anonymous. The only
+# place the feature is named is the URL. That is what this file is for.
+#
+# Entries are VERBATIM node keys. Never compose one — copy it from
+#   node src/cli.ts search <phrase> --json
+# and run `node src/cli.ts features check` to verify every entry still
+# resolves. A key that has gone stale is reported, never silently skipped.
+#
+# Shape:
+#   <id>:
+#     name:     what people call it
+#     aliases:  other things people call it
+#     routes:   "<service> <METHOD> <url>" node keys
+#     symbols:  verbatim SCIP symbols
+#     files:    "<repo>/<path>" file node keys
+#     notes:    anything a reader of the pack should know up front
+#
+# A value may not contain " #" — that is stripped as a trailing comment.
+
+features:
+  grn-creation:
+    name: GRN creation
+    aliases:
+      - goods receipt note
+      - receive goods
+      - create grn
+      - grn
+    routes:
+      - 40-kri-router POST /api/v1/grn
+      - 41-kri-engine POST /api/v1/grn
+    symbols:
+      - scip-typescript npm 60-kri-next 0.1.0 app/grn/`page.tsx`/GRNPage().
+    notes: The router has no GRN handler of its own - it special-cases the path inside proxyToEngine. See the cfg tier for the branch.

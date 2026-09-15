@@ -697,6 +697,7 @@ rather than covering for each other.
 | P3-T5 additional languages | — | not started |
 | **P3-T6 `search` over MCP (R79)** | `—` | **done** |
 | **P3-T7 repo-scoped file attribution (R80)** | `—` | **done — bug fix** |
+| **P3-T8 reviewed feature manifest (R81)** | `—` | **done** |
 
 The P3-T2 row above is stale: OPEN-8 was closed with a decision and the feature
 shipped — see the narrative entry below and commits `a99eb5b` / `4cf32e9`.
@@ -1024,3 +1025,59 @@ the scope is removed. A regression test that cannot go red is a comment.
 same path in the same repo cannot exist, but a symbol whose `files` row was
 written by a different run than its `nodes` row would still resolve by path
 alone. 466 tests pass; typecheck clean.
+
+---
+
+## P3-T8 — a place to write down what the code does not say
+
+P3-T6 established the problem empirically: `search "GRN creation"` matches
+nothing. The `and` aspect needs every token and no indexed row contains
+"creation". Bare `search "grn"` returns 29 rows whose **top 19 are Next.js
+form-field variables** (`grn_number0`, `remarks1`, …), leaving the six routes
+actually named `/api/v1/grn` at ranks 20-29 — below the default top-K. The
+router's handler is the generic `proxyToEngine`, shared by fifteen routes; the
+engine's is anonymous. **The only place the feature is named is the URL.**
+
+No amount of ranking tuning reaches that, so a human writes it down.
+`rules/features.yml` maps a business name and its aliases to verbatim node
+keys, and `src/config/features.ts` reads it.
+
+**`rules/`, not `config/`.** `config/repos.json` is per-machine; `rules/` is
+reviewed vocabulary, and `check-kinds.yml` already lives there with a header
+explaining why — a judgement about a codebase belongs in a file a human reads.
+A feature list is the same for everyone who checks out the repo.
+
+**No table, and the argument is the working rule itself.** "No table or column
+without an extractor that fills it this week" exists to stop DDL with no
+producer. There is no extractor here *by construction* — a person writes the
+file after reading the graph. Reading it at query time keeps one source of
+truth and needs no reindex to add a feature. A `feature` node kind was
+considered and rejected for this slice: `search()` drops rows with no live
+node, so FTS-indexing features would need real nodes, which invites
+feature→symbol edges — a second identity system beside SCIP, which is the v2
+root cause this project is named after avoiding. Revisit past ~50 features.
+
+**The parser is `security-rules.ts`'s pattern with one departure that would
+have silently broken everything.** `check-kinds.yml` matches list values with
+`[A-Za-z0-9_$.-]+`. That charset rejects every route key (spaces, slashes) and
+every SCIP symbol (backticks, spaces, parentheses) in this manifest. List
+values are therefore taken **verbatim to end of line**; the cost, documented in
+the file, is that a value may not contain ` #`.
+
+**`features check` is the guard.** The manifest's one real failure mode is
+going stale, so every entry is resolved and the unresolved ones are printed
+with their line number and the candidates `resolveSeed` offered, exiting 1 —
+verified both ways: a good manifest exits 0, and an invented symbol reports
+`STALE … (line 41)` with "nothing in the store matches this key" and exits 1.
+
+**Verified.** All three shipped entries resolve — both `/api/v1/grn` routes and
+`GRNPage` in the Next.js app. 481 tests pass; typecheck clean. A test asserts
+the SCIP symbol round-trips byte-for-byte, because a parser that eats one
+backtick produces an entry that resolves to nothing and says nothing about it.
+
+**What it does not do.** Matching is exact on id/name/alias, then a token-subset
+fallback, and nothing fuzzier — an unmatched phrase falls through to `search`
+and the pack says which answered. There is no check that a manifest entry is
+*sufficient*: a feature can name one of its three entry points and nothing
+reports the two it left out. `--entry` is parsed and threaded but has no
+consumer until P3-T9.

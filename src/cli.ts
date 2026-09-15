@@ -24,7 +24,9 @@ import { readFastapiDump, toBootDump } from "./boot/fastapi.ts";
 import { buildFlow, renderFlow } from "./query/flow.ts";
 import { endpointFlow, RouteNotFound, type EndpointFlow } from "./query/endpoint-flow.ts";
 import { renderEndpointFlow } from "./query/endpoint-flow-render.ts";
-import { impact, SeedNotFound, type ImpactReport } from "./query/impact.ts";
+import {
+  impact, resolveSeed, SeedNotFound, type ImpactReport,
+} from "./query/impact.ts";
 import { renderImpact } from "./query/impact-render.ts";
 import { securityPath } from "./query/security.ts";
 import { renderSecurity, renderRouteSecurity } from "./query/security-render.ts";
@@ -49,6 +51,9 @@ import { planGeneration, generateFromPlan, type GenerationReport } from "./llm/o
 import { renderIndexReport } from "./index/report.ts";
 import { buildSearchIndex } from "./index/search.ts";
 import { search, type FollowQuery, type SearchCandidate } from "./query/workflow.ts";
+import {
+  loadFeatures, matchFeature, DEFAULT_FEATURES_PATH,
+} from "./config/features.ts";
 
 const BREAK = String.fromCharCode(10);
 const DEFAULT_DB = ".codeintel/graph.db";
@@ -82,6 +87,7 @@ COMMANDS
   co-changed [file]   Derive, or query, files that change together (P3-T1)
   search build        Rebuild the FTS5 seed index from the store (P3-T3)
   search <phrase>     Fuzzy phrase → one seed, then its effects (P3-T3)
+  features check      Verify every rules/features.yml entry still resolves (P3-T8)
   summaries generate Bottom-up summaries over a LOCAL model, cache-first (P3-T2)
   summaries read <k>  Print a generated summary (never loads the model)
   help                Show this message
@@ -103,6 +109,8 @@ OPTIONS
   --fan-in <n>        impact: callers above which a symbol is a utility (default 10)
   --limit <n>         impact: routes to list before trimming     (default 25)
   --seed <key>        search: explicit seed node key, correcting stage 1 (P3-T3)
+  --features <path>   features: manifest path      (default: ${DEFAULT_FEATURES_PATH})
+  --entry <spec>      features: an entry point, repeatable, overriding the manifest
   --budget <n>        context: token budget                      (default 4000)
   --no-source         context: omit tier-1 raw source
   --measure           context: also report the R71 token delta vs dumping files
@@ -146,6 +154,8 @@ interface Options {
   kind: string;
   anomaly: string;
   budget: number | undefined;
+  features: string;
+  entries: string[];
   noSource: boolean;
   measure: boolean;
   port: number | undefined;
@@ -185,6 +195,10 @@ async function main(argv: string[]): Promise<number> {
         kind: { type: "string" },
         anomaly: { type: "string" },
         budget: { type: "string" },
+        features: { type: "string" },
+        // Repeatable so several entry points can be named on one command line.
+        // `--seed` is deliberately NOT multiple: cmdSearch reads it as a string.
+        entry: { type: "string", multiple: true },
         "no-source": { type: "boolean", default: false },
         measure: { type: "boolean", default: false },
         port: { type: "string" },
@@ -227,6 +241,8 @@ async function main(argv: string[]): Promise<number> {
     kind: values.kind ?? "",
     anomaly: values.anomaly ?? "tenant",
     budget: values.budget ? Number(values.budget) : undefined,
+    features: values.features ?? DEFAULT_FEATURES_PATH,
+    entries: (values.entry as string[] | undefined) ?? [],
     noSource: values["no-source"] === true,
     measure: values.measure === true,
     port: values.port ? Number(values.port) : undefined,
@@ -319,6 +335,9 @@ async function main(argv: string[]): Promise<number> {
     case "search":
       if (sub === "build") return cmdSearchBuild(options);
       return cmdSearch(options, positionals.slice(1).join(" "));
+
+    case "features":
+      return cmdFeaturesCheck(options);
 
     case "mcp":
       // Never returns: the transport owns the process until stdin closes.
@@ -737,6 +756,65 @@ function cmdImpact(options: Options, seed: string): number {
  * Idempotent and wholesale: rows mirror the store at build time, so the output
  * is a deterministic function of the store (P3-T3, R43).
  */
+/**
+ * features check — every manifest entry still resolves to a node (P3-T8).
+ *
+ * The manifest is hand-written verbatim node keys, so its one real failure mode
+ * is going stale: a function renamed, a route moved. This is the guard. It
+ * reports the unresolved rows with their line numbers and the candidates
+ * `resolveSeed` offered, and exits non-zero — a stale entry must be visible in
+ * CI, not discovered as a silently thinner context pack.
+ */
+function cmdFeaturesCheck(options: Options): number {
+  let manifest;
+  try {
+    manifest = loadFeatures(options.features);
+  } catch (e) {
+    process.stderr.write(`features: ${(e as Error).message}` + BREAK);
+    return 1;
+  }
+  if (!manifest.present) {
+    process.stderr.write(
+      `features: no manifest at ${options.features}` + BREAK +
+      "  This is optional — without it, a business phrase falls back to search." + BREAK,
+    );
+    return 1;
+  }
+
+  const store = new FactStore(options.db);
+  let unresolved = 0;
+  let entries = 0;
+  try {
+    for (const feature of manifest.features) {
+      const rows: string[] = [];
+      for (const entry of feature.entries) {
+        entries += 1;
+        try {
+          const seed = resolveSeed(store, entry.spec);
+          rows.push(`    ok    ${entry.kind.padEnd(6)} ${seed.display}`);
+        } catch (e) {
+          unresolved += 1;
+          rows.push(`    STALE ${entry.kind.padEnd(6)} ${entry.spec}  (line ${entry.line})`);
+          if (e instanceof SeedNotFound) {
+            for (const m of e.matches.slice(0, 4)) rows.push(`            did you mean  ${m.key}`);
+            if (e.matches.length === 0) rows.push("            nothing in the store matches this key");
+          }
+        }
+      }
+      process.stdout.write(`  ${feature.id}  (${feature.name})` + BREAK);
+      for (const row of rows) process.stdout.write(row + BREAK);
+    }
+    process.stdout.write(
+      BREAK +
+      `${manifest.features.length} feature(s), ${entries} entr(ies), ` +
+      `${unresolved} unresolved` + BREAK,
+    );
+    return unresolved === 0 ? 0 : 1;
+  } finally {
+    store.close();
+  }
+}
+
 function cmdSearchBuild(options: Options): number {
   const store = new FactStore(options.db);
   try {
