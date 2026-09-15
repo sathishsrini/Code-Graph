@@ -699,6 +699,7 @@ rather than covering for each other.
 | **P3-T7 repo-scoped file attribution (R80)** | `—` | **done — bug fix** |
 | **P3-T8 reviewed feature manifest (R81)** | `—` | **done** |
 | **P3-T9 multi-seed feature pack (R82)** | `—` | **done** |
+| **P3-T10 cfg + prose tiers (R83)** | `—` | **done** |
 
 The P3-T2 row above is stale: OPEN-8 was closed with a decision and the feature
 shipped — see the narrative entry below and commits `a99eb5b` / `4cf32e9`.
@@ -1159,3 +1160,75 @@ never reads source — with N seeds the bodies would spend the budget on exactly
 what the structure replaces. Nothing checks a manifest entry is *sufficient*: a
 feature that names one of its three entry points produces a confident, thinner
 pack and says nothing about the two it left out.
+
+---
+
+## P3-T10 — the decision structure reaches the AI
+
+Migration 011 and the viewer gave control flow to a **human**: an ISO flowchart,
+diamonds for decisions, colour for outcome. A model got none of it. That gap is
+the reason this tier exists, and the corpus shows exactly why it mattered.
+
+The router has **no GRN handler**. `proxyToEngine` is shared by fifteen routes
+and special-cases the path in an `else` branch at lines 205-211 of a 110-line
+function. Before this tier a pack could say "proxyToEngine handles GRN" and
+nothing more; the reader had to open the file and find the branch. Now the pack
+says:
+
+```
+req.url.startsWith('/api/v1/grn'),when isCreateSuccess AND NOT(req.url.startsWith('/api/v1/po')),server.js:205
+```
+
+**Condensed, not dumped.** `proxyToEngine` alone is 20 blocks and 31 edges, and
+rendering that is a token bomb of structure nobody reads. One row per decision,
+exit, catch and error-path call, each carrying the guard path that reaches it —
+20 rows for the whole feature across two services.
+
+**The guard path is built in TypeScript, walking `parent_index` + `branch_label`
+upward**: `then` contributes the parent's condition, `else` its negation,
+`catch` contributes `on-throw`, `loop_body` contributes `per-iteration`, and
+`try_body` contributes nothing because being inside a try is not a condition.
+Innermost three ancestors, elided with a leading `…`.
+
+The negation is the part that earns its keep. Without it `/api/v1/grn` and
+`/api/v1/po` read as two independent branches and a reader concludes both can
+run; with it they are visibly an if/else-if chain.
+
+**And the output says it is syntactic.** `when` describes which arm of which
+enclosing branch a row sits in — containment plus arm, which migration 011's own
+header warns is not control flow. It is not an execution trace and not a proof
+of reachability, and `CFG_NOTE` says so in the document's first line. Calling it
+a trace would be the static/runtime conflation this engine refuses everywhere
+else. `function_cfg_edges` is used only for the two things it alone knows: an
+edge to NULL is an implicit return, and a `loop_back` means the block repeats.
+Full path enumeration is deliberately not done — eight branches is up to 256
+paths, the opposite of a budget.
+
+**`cfg` rows sort by source position, not by name.** The generic rule is
+most-shared-then-alphabetical, which rendered control flow as L170, L273, L262,
+L238 and left the reader to re-sort by hand. A list of callees has no inherent
+order; a decision structure does. Cutting the tier now keeps the top of the
+function, which is where reading starts.
+
+**R63 without weakening the guard.** `tests/summaries.test.ts` greps every `.ts`
+under `src/query/` for that table's name — a match in an *import path* is enough
+to turn it red. So the dependency is inverted: `feature-pack.ts` declares
+`ProseNote` and takes notes through an option; `src/llm/prose-tier.ts` imports
+the type upward and does the reading. The packer has no code path to the cache
+at all, which is stronger than the convention it replaces. The separation is
+carried by the TYPE — `ProseNote` is not a `FeatureItem` and cannot enter
+`pack.items` — so mixing a paraphrase into extracted rows is a compile error,
+not a review miss. `collectProse` takes no provider and cannot construct one: a
+context query that silently triggers a weight download is one nobody can budget
+for.
+
+**Verified.** The GRN pack's `cfg` tier renders 20 rows in source order, from
+the `authErr` guard at L170 through the GRN branch at L205 to the
+`KRI40-DOWNSTREAM-TIMEOUT-001` exit at L275, plus `GRNPage`'s implicit return.
+509 tests pass; the R63 containment test passes unchanged; typecheck clean.
+
+**What it does not do.** No path enumeration, so "which combinations of
+conditions reach this exit" is still unanswered. `break`/`continue` are not jump
+targets. A `catch` edge is one abstract arrow from the try, not from every
+statement that could throw inside it. And the prose tier is empty on this corpus
+until `summaries generate` has been run.

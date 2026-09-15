@@ -45,6 +45,7 @@ import {
 import { resolveSeed, SeedNotFound, type ImpactSeed } from "./impact.ts";
 import { search } from "./workflow.ts";
 import { matchFeature, type FeatureManifest } from "../config/features.ts";
+import { cfgRowsFor, CFG_NOTE } from "./cfg-tier.ts";
 
 /**
  * Priority order. `feature` first, `gaps` last, and both are reserved.
@@ -437,6 +438,9 @@ export function featurePack(
     adopt("transitive", transitiveCallees(store, seed.nodeId), via);
     adopt("gaps", gapsFor(store, seed.nodeId), via);
 
+    // Where inside this function the feature actually lives (P3-T10).
+    for (const row of cfgRowsFor(store, seed.nodeId, seed.file)) add("cfg", row, via);
+
     // Rule 3: a symbol reached BY expanding a route does not drag its own
     // fifteen routes back in. Only a seed the caller actually named does.
     if (resolved.derivedFrom === null) adopt("entrypoints", routesFor(store, seed.nodeId), via);
@@ -448,6 +452,19 @@ export function featurePack(
 
   const prose = skip.has("prose") ? [] : options.prose ?? [];
   return budgeted(feature, seeds, unresolved, byTier, prose, budget);
+}
+
+/** `file:line` order — by file, then by line NUMERICALLY, not as text. */
+function compareWhere(a: string, b: string): number {
+  const cut = (w: string): [string, number] => {
+    const i = w.lastIndexOf(":");
+    const n = i < 0 ? NaN : Number(w.slice(i + 1));
+    return Number.isFinite(n) ? [w.slice(0, i), n] : [w, Number.MAX_SAFE_INTEGER];
+  };
+  const [fa, la] = cut(a);
+  const [fb, lb] = cut(b);
+  if (fa !== fb) return fa < fb ? -1 : 1;
+  return la - lb;
 }
 
 /**
@@ -468,9 +485,16 @@ function budgeted(
   const sorted = new Map<FeatureTier, FeatureItem[]>();
   for (const [tier, bucket] of byTier) {
     // Most-shared first: the spine of the feature is what survives a cut.
-    sorted.set(tier, [...bucket.values()].sort(
-      (a, b) => b.via.length - a.via.length || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
-    ));
+    // Within that, `cfg` orders by POSITION and everything else by name. A
+    // list of callees has no inherent order, but a decision structure does —
+    // alphabetised control flow reads as L170, L273, L262, L238, and a reader
+    // trying to follow the function has to re-sort it by hand. Cutting the
+    // tier then keeps the top of the function, which is where reading starts.
+    const byPosition = tier === "cfg";
+    sorted.set(tier, [...bucket.values()].sort((a, b) =>
+      b.via.length - a.via.length ||
+      (byPosition ? compareWhere(a.where, b.where) : 0) ||
+      (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)));
   }
 
   const gaps = sorted.get("gaps") ?? [];
@@ -560,11 +584,13 @@ const itemRow = (i: FeatureItem) => ({
  * read it as fact.
  */
 export function featurePackToToon(pack: FeaturePack): string {
+  const hasCfg = pack.items.some((i) => i.tier === "cfg");
   const head: Record<string, unknown> = {
     read:
       "certain=compiler resolved it · inferred=a parser guessed it · " +
       "observed=runtime saw it · unresolved=a known gap. " +
-      "[file-scope] means attributed to the file, not the function.",
+      "[file-scope] means attributed to the file, not the function." +
+      (hasCfg ? ` ${CFG_NOTE}` : ""),
     feature: pack.feature.name ?? pack.feature.asked,
     asked: pack.feature.asked,
     featureId: pack.feature.id ?? "",
