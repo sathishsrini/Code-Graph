@@ -399,3 +399,106 @@ describe("the document", () => {
     } finally { store.close(); }
   });
 });
+
+// ---------------------------------------------------------------------------
+// The impact tier (P3-T11, R84) — the blast radius, minus what other tiers said
+// ---------------------------------------------------------------------------
+describe("the impact tier", () => {
+  test("it leads with a verdict carrying COUNTS, not another list", () => {
+    // "proxyToEngine serves 15 routes" is the whole answer to "what else
+    // breaks if I change GRN creation", and it is one row. Ranking by kind
+    // also means a budget cut keeps the summary and drops the enumeration.
+    const store = new FactStore(join(dir, "verdict.db"));
+    try {
+      const c = ctx(store);
+      const proxy = c.sym("proxyToEngine");
+      for (const url of ["/grn", "/po", "/bill"]) {
+        const r = c.route("POST", url);
+        c.edge(r, proxy, "HANDLES");
+        c.chain(r, proxy, { name: "proxyToEngine" });
+      }
+      const pack = featurePack(store, "f", { manifest: manifestOf([SYM("svc", "proxyToEngine")]) });
+      const impact = pack.items.filter((i) => i.tier === "impact");
+      assert.equal(impact[0]!.kind, "verdict", "the summary is first, not alphabetical");
+      assert.ok(impact[0]!.detail.includes("routes=3"));
+    } finally { store.close(); }
+  });
+
+  test("a route already listed as an entry point is not repeated", () => {
+    const store = new FactStore(join(dir, "nodup.db"));
+    try {
+      const c = ctx(store);
+      const proxy = c.sym("proxyToEngine");
+      const mine = c.route("POST", "/grn");
+      const other = c.route("POST", "/bill");
+      for (const r of [mine, other]) {
+        c.edge(r, proxy, "HANDLES");
+        c.chain(r, proxy, { name: "proxyToEngine" });
+      }
+      const pack = featurePack(store, "f", { manifest: manifestOf(["svc POST /grn"]) });
+      const routes = pack.items.filter((i) => i.tier === "impact" && i.kind === "route");
+      assert.deepEqual(routes.map((r) => r.name), ["POST /bill"],
+        "only the OTHER route the shared proxy serves — the delta, not the whole list");
+    } finally { store.close(); }
+  });
+
+  test("direct callers are never re-emitted — that is the callers tier", () => {
+    // Repeating them would inflate the document and imply corroboration where
+    // there is a single source.
+    const store = new FactStore(join(dir, "nocallers.db"));
+    try {
+      const c = ctx(store);
+      const seed = c.sym("target");
+      c.edge(c.sym("caller1"), seed, "CALLS");
+      const pack = featurePack(store, "f", { manifest: manifestOf([SYM("svc", "target")]) });
+      assert.ok(pack.items.some((i) => i.tier === "callers" && i.name === "caller1"));
+      assert.ok(
+        !pack.items.some((i) => i.tier === "impact" && i.name === "caller1"),
+        "the impact tier carries only what no other tier has",
+      );
+    } finally { store.close(); }
+  });
+
+  test("a high fan-in symbol is called a utility rather than listed against everything", () => {
+    // R39: an answer of "everything" is indistinguishable from no answer.
+    const store = new FactStore(join(dir, "utility.db"));
+    try {
+      const c = ctx(store);
+      const util = c.sym("nowIso");
+      for (let i = 0; i < 15; i += 1) c.edge(c.sym(`caller${i}`), util, "CALLS");
+      const pack = featurePack(store, "f", { manifest: manifestOf([SYM("svc", "nowIso")]) });
+      const note = pack.items.find((i) => i.tier === "impact" && i.kind === "utility");
+      assert.ok(note, "the caution is present");
+      assert.ok(note.detail.includes("not as a review list"));
+    } finally { store.close(); }
+  });
+
+  test("co-users surface coupling no call graph can see", () => {
+    const store = new FactStore(join(dir, "couser.db"));
+    try {
+      const c = ctx(store);
+      const mine = c.sym("createGrn");
+      const theirs = c.sym("sendMail");
+      const env = c.node("config", "env:SERVICE_TOKEN");
+      c.edge(mine, env, "READS_CONFIG");
+      c.edge(theirs, env, "READS_CONFIG");
+      const pack = featurePack(store, "f", { manifest: manifestOf([SYM("svc", "createGrn")]) });
+      const shared = pack.items.find((i) => i.tier === "impact" && i.kind === "co-user");
+      assert.ok(shared, "the shared env var is reported");
+      assert.equal(shared.name, "env:SERVICE_TOKEN");
+      assert.ok(shared.detail.includes("sendMail") || shared.detail.includes("svc"));
+    } finally { store.close(); }
+  });
+
+  test("skipTiers can turn the whole tier off", () => {
+    const store = new FactStore(join(dir, "noimpact.db"));
+    try {
+      const c = ctx(store);
+      c.sym("alpha");
+      const pack = featurePack(store, "f", {
+        manifest: manifestOf([SYM("svc", "alpha")]), skipTiers: ["impact"],
+      });
+      assert.equal(pack.items.filter((i) => i.tier === "impact").length, 0);
+    } finally { store.close(); }
+  });
+});

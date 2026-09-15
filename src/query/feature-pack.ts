@@ -42,10 +42,16 @@ import {
   dumpBaseline, gapsFor, neighbours, routesFor, securityFor, touching,
   transitiveCallees, type PackedItem, type TokenDelta,
 } from "./context-pack.ts";
-import { resolveSeed, SeedNotFound, type ImpactSeed } from "./impact.ts";
+import {
+  impactFrom, resolveSeed, SeedNotFound,
+  type ImpactReport, type ImpactSeed,
+} from "./impact.ts";
 import { search } from "./workflow.ts";
 import { matchFeature, type FeatureManifest } from "../config/features.ts";
-import { cfgRowsFor, CFG_NOTE } from "./cfg-tier.ts";
+import { cfgRowsFor, CFG_NOTE, type CfgRow } from "./cfg-tier.ts";
+
+/** `CfgRow` is just {kind,name,detail,where} — reused for the impact tier. */
+type CfgLikeRow = CfgRow;
 
 /**
  * Priority order. `feature` first, `gaps` last, and both are reserved.
@@ -446,6 +452,22 @@ export function featurePack(
     if (resolved.derivedFrom === null) adopt("entrypoints", routesFor(store, seed.nodeId), via);
   }
 
+  // The blast radius, after every other tier is merged — it needs to know what
+  // they already said so it can report only the delta (P3-T11).
+  if (!skip.has("impact")) {
+    const alreadyShown = new Set<string>();
+    for (const item of byTier.get("entrypoints")!.values()) {
+      alreadyShown.add(item.name);
+      alreadyShown.add(item.where);
+    }
+    for (const resolved of seeds) {
+      if (resolved.seed.kind === "route") continue;  // reverse closure from a route is its own chain
+      for (const row of impactRows(impactFrom(store, resolved.seed), alreadyShown)) {
+        add("impact", row, resolved.seed.display);
+      }
+    }
+  }
+
   for (const note of notes) {
     add(note.tier, { kind: note.kind, name: note.name, detail: note.detail, where: note.where }, note.via[0] ?? asked);
   }
@@ -453,6 +475,13 @@ export function featurePack(
   const prose = skip.has("prose") ? [] : options.prose ?? [];
   return budgeted(feature, seeds, unresolved, byTier, prose, budget);
 }
+
+/** Verdict, then caution, then the enumerations it summarises. */
+const IMPACT_ORDER = ["verdict", "utility", "route", "co-user"];
+const impactRank = (kind: string): number => {
+  const i = IMPACT_ORDER.indexOf(kind);
+  return i < 0 ? IMPACT_ORDER.length : i;
+};
 
 /** `file:line` order — by file, then by line NUMERICALLY, not as text. */
 function compareWhere(a: string, b: string): number {
@@ -465,6 +494,88 @@ function compareWhere(a: string, b: string): number {
   const [fb, lb] = cut(b);
   if (fa !== fb) return fa < fb ? -1 : 1;
   return la - lb;
+}
+
+/**
+ * What this tier adds that the others do not.
+ *
+ * `impact()`'s direct callers ARE the `callers` tier and its routes overlap
+ * `entrypoints`, so re-emitting them would inflate the document with rows the
+ * reader has already seen and imply corroboration where there is only one
+ * source. Four row kinds survive that filter:
+ *
+ *   verdict   counts, not lists. "proxyToEngine serves 15 routes" is the whole
+ *             answer to "what else breaks if I change GRN creation", and it is
+ *             one row.
+ *   route     routes reached THROUGH the feature that are not entry points —
+ *             the other fourteen the shared proxy serves.
+ *   co-user   who ELSE reads this env var or writes this table. No call graph
+ *             can see that coupling, and no other tier reports it.
+ *   utility   a caution, when fan-in says the route list is "most of the
+ *             service" rather than a review list (R39).
+ *
+ * Suppression is an explicit name/location match against entry points only,
+ * never a blanket cross-tier dedupe: a symbol legitimately appearing in two
+ * tiers is information, not a duplicate.
+ */
+function impactRows(r: ImpactReport, alreadyShown: ReadonlySet<string>): CfgLikeRow[] {
+  const rows: CfgLikeRow[] = [];
+  const buckets = [
+    ["certain", r.routes.certain], ["inferred", r.routes.inferred],
+    ["unknown", r.routes.unknown],
+  ] as const;
+
+  rows.push({
+    kind: "verdict",
+    name: r.seed.display,
+    detail:
+      `fanIn=${r.fanIn} · routes=${r.totalRoutes}` +
+      ` (certain ${r.routes.certain.length} / inferred ${r.routes.inferred.length}` +
+      ` / unknown ${r.routes.unknown.length})` +
+      (r.routesTruncated ? " · list trimmed, count exact" : ""),
+    where: r.seed.file ?? "",
+  });
+
+  if (r.isUtility) {
+    rows.push({
+      kind: "utility",
+      name: `${r.seed.display} is a utility`,
+      detail:
+        `${r.fanIn} distinct direct callers (threshold ${r.utilityThreshold}). ` +
+        "Read the route list as 'most of the service', not as a review list.",
+      where: r.seed.file ?? "",
+    });
+  }
+
+  for (const [confidence, list] of buckets) {
+    for (const route of list) {
+      if (alreadyShown.has(route.key)) continue;
+      rows.push({
+        kind: "route",
+        name: `${route.method} ${route.url}`,
+        detail: `${confidence} · depth ${route.depth} · via ${route.viaSymbol}`,
+        where: route.service,
+      });
+    }
+  }
+
+  for (const [label, shared] of [["config", r.configuration], ["data", r.data]] as const) {
+    for (const node of shared) {
+      if (node.alsoUsedBy.length === 0) continue;
+      const others = [...new Set(node.alsoUsedBy.map((u) => u.service ?? u.display))];
+      rows.push({
+        kind: "co-user",
+        name: node.key,
+        detail:
+          `${label} shared with ${node.alsoUsedBy.length} other user(s): ` +
+          `${others.slice(0, 5).join(", ")}${others.length > 5 ? ", …" : ""}` +
+          (node.attributedTo === "file" ? " [file-scope]" : ""),
+        where: r.seed.file ?? "",
+      });
+    }
+  }
+
+  return rows;
 }
 
 /**
@@ -490,9 +601,16 @@ function budgeted(
     // alphabetised control flow reads as L170, L273, L262, L238, and a reader
     // trying to follow the function has to re-sort it by hand. Cutting the
     // tier then keeps the top of the function, which is where reading starts.
+    // `impact` leads with its verdict rows for the same reason: "proxyToEngine
+    // serves 15 routes" IS the answer to "what else breaks", and alphabetical
+    // order buried it between `POST /api/v1/po` and `env:DATABASE_USER`.
+    // Ranking by kind also means a budget cut keeps the summary and drops the
+    // enumeration, which is the right way round.
     const byPosition = tier === "cfg";
+    const byKind = tier === "impact";
     sorted.set(tier, [...bucket.values()].sort((a, b) =>
       b.via.length - a.via.length ||
+      (byKind ? impactRank(a.kind) - impactRank(b.kind) : 0) ||
       (byPosition ? compareWhere(a.where, b.where) : 0) ||
       (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)));
   }

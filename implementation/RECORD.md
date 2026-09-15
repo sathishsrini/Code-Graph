@@ -700,6 +700,7 @@ rather than covering for each other.
 | **P3-T8 reviewed feature manifest (R81)** | `—` | **done** |
 | **P3-T9 multi-seed feature pack (R82)** | `—` | **done** |
 | **P3-T10 cfg + prose tiers (R83)** | `—` | **done** |
+| **P3-T11 impact tier (R84)** | `—` | **done** |
 
 The P3-T2 row above is stale: OPEN-8 was closed with a decision and the feature
 shipped — see the narrative entry below and commits `a99eb5b` / `4cf32e9`.
@@ -1232,3 +1233,46 @@ conditions reach this exit" is still unanswered. `break`/`continue` are not jump
 targets. A `catch` edge is one abstract arrow from the try, not from every
 statement that could throw inside it. And the prose tier is empty on this corpus
 until `summaries generate` has been run.
+
+---
+
+## P3-T11 — blast radius, without saying anything twice
+
+The user's question is "what is the impact of a change across the codebase",
+and answering it with a second tool call defeats the point of one document. But
+`impact()`'s direct callers **are** the `callers` tier and its routes overlap
+`entrypoints`, so folding the whole report in would inflate the pack with rows
+the reader has already seen and imply corroboration where there is one source.
+
+Four row kinds survive that filter, and nothing else does:
+
+| kind | what only this says |
+|---|---|
+| `verdict` | counts, not lists — `fanIn=0 · routes=15 (certain 15 / …)` |
+| `route` | the routes reached *through* the feature that are **not** entry points |
+| `co-user` | who else reads this env var or writes this table |
+| `utility` | R39's caution, when the list is "most of the service" |
+
+On the corpus this is the answer the whole project exists to give. Changing GRN
+creation means changing `proxyToEngine`, and `proxyToEngine` serves **15 routes**
+— the fourteen others are `/api/v1/po` and `/api/v1/bill`, listed individually
+with `certain · depth 1 · via proxyToEngine`. And `env:DATABASE_*` is shared with
+`51-integration`, a coupling no call graph can see.
+
+**Suppression is an explicit match against entry points, never a blanket
+cross-tier dedupe.** A symbol legitimately appearing in two tiers is
+information; a route that is both an entry point and a blast-radius hit is not.
+
+**The tier leads with its verdict.** The generic sort is most-shared then
+alphabetical, which buried `proxyToEngine · routes=15` between `POST /api/v1/po`
+and `env:DATABASE_USER` — the summary below the thing it summarises. Rows now
+rank `verdict → utility → route → co-user`, which also means a budget cut keeps
+the summary and drops the enumeration rather than the other way round.
+
+522 tests pass; typecheck clean.
+
+**What it does not do.** `fanIn` counts `CALLS` only, so a handler reached only
+through `HANDLES` reports `fanIn=0` beside a non-zero route count — accurate,
+but it reads oddly. A file-node seed produces a `fanIn=0 · routes=0` verdict
+that is true and uninformative. Runtime coupling is still reported as absent by
+construction, because P2-T8's traces have no producer on this corpus.
