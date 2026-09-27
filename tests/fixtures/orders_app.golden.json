@@ -1,0 +1,97 @@
+{
+  "fixture": "tests/fixtures/orders_app",
+  "description": "Ground truth for code-intel's workflow benchmark, scripts/workflow-bench.ts (a port of CodeGraph's scripts/workflow_bench.py). tests/orders-app-golden.test.ts checks it against the fixture. `fixture` is relative to the repo root. A small multi-layer app: TypeScript UI -> FastAPI route (mounted under /api) -> service -> repository -> SQLAlchemy model -> SQL migration, a Go payments service reached over HTTP through PAYMENT_URL, a Kafka producer/consumer, docker-compose, k8s and Terraform. Symbols are identified as '<fixture-relative path>::<name>'. Lines are 1-based. The `plan` steps name the codegraph_* MCP tools of the CodeGraph engine this fixture was first written for; a code-intel run has to map each one onto its own MCP tools.",
+  "questions": [
+    {
+      "id": "checkout_402_root_cause",
+      "question": "Why do orders of 1000 or more fail with HTTP 402? Trace from the Pay button to the root cause.",
+      "plan": [
+        {"tool": "codegraph_find_entry_points", "args": {}},
+        {"tool": "codegraph_get_ai_context", "target": {"file": "api/app/routes/orders.py", "line": 10}, "args": {"intent": "debug"}},
+        {"tool": "codegraph_get_call_graph", "target": {"file": "api/app/routes/orders.py", "line": 10}, "args": {"direction": "callees", "depth": 6}},
+        {"tool": "codegraph_get_ai_context", "target": {"file": "api/app/services/order_service.py", "line": 14}, "args": {"intent": "debug"}},
+        {"tool": "codegraph_search_by_error", "args": {"error_type": "PaymentDeclined"}},
+        {"tool": "codegraph_get_curated_context", "args": {"query": "what happens when a customer places an order: checkout button, API route, payment charge, database write, and the order.created event"}}
+      ],
+      "facts": [
+        {"id": "ui_calls_client", "file": "web/src/pages/Checkout.tsx", "line": 5, "evidence": "await submitOrder(props.customerId, props.cart)"},
+        {"id": "client_posts_api_orders", "file": "web/src/api/orders.ts", "line": 7, "evidence": "fetch(\"/api/orders\""},
+        {"id": "router_mounted_under_api", "file": "api/app/main.py", "line": 6, "evidence": "include_router(orders.router, prefix=\"/api\")"},
+        {"id": "route_maps_decline_to_402", "file": "api/app/routes/orders.py", "line": 15, "evidence": "HTTPException(status_code=402"},
+        {"id": "service_raises_on_decline", "file": "api/app/services/order_service.py", "line": 20, "evidence": "raise PaymentDeclined("},
+        {"id": "repository_writes_order", "file": "api/app/repositories/order_repo.py", "line": 12, "evidence": "self.session.add(order)"},
+        {"id": "model_maps_orders_table", "file": "api/app/models/order.py", "line": 8, "evidence": "__tablename__ = \"orders\""},
+        {"id": "client_posts_to_payments", "file": "api/app/clients/payments.py", "line": 8, "evidence": "f\"{PAYMENT_URL}/charge\""},
+        {"id": "payment_url_points_at_payments", "file": "docker-compose.yml", "line": 6, "evidence": "PAYMENT_URL: http://payments:8080"},
+        {"id": "root_cause_amount_threshold", "file": "payments/main.go", "line": 19, "evidence": "approved := req.Amount < 1000"},
+        {"id": "orders_table_schema", "file": "db/migrations/001_create_orders.sql", "line": 6, "evidence": "CREATE TABLE orders"}
+      ]
+    },
+    {
+      "id": "order_created_event_flow",
+      "question": "What happens after an order is paid? Who consumes the order.created event and what does it do?",
+      "plan": [
+        {"tool": "codegraph_get_callees", "target": {"file": "api/app/services/order_service.py", "line": 14}, "args": {"depth": 2}},
+        {"tool": "codegraph_get_ai_context", "target": {"file": "api/app/events.py", "line": 10}, "args": {"intent": "explain"}},
+        {"tool": "codegraph_find_entry_points", "args": {"entryType": "event_handler"}},
+        {"tool": "codegraph_get_ai_context", "target": {"file": "worker/consumers.py", "line": 13}, "args": {"intent": "explain"}}
+      ],
+      "facts": [
+        {"id": "service_publishes_event", "file": "api/app/services/order_service.py", "line": 22, "evidence": "publish(\"order.created\""},
+        {"id": "producer_sends_to_kafka", "file": "api/app/events.py", "line": 11, "evidence": "_producer.send(topic"},
+        {"id": "consumer_subscribes_topic", "file": "worker/consumers.py", "line": 6, "evidence": "KafkaConsumer(\"order.created\""},
+        {"id": "consumer_sends_receipt", "file": "worker/consumers.py", "line": 15, "evidence": "send_receipt_email(event[\"order_id\"]"},
+        {"id": "broker_address", "file": "docker-compose.yml", "line": 7, "evidence": "KAFKA_BROKERS: kafka:9092"}
+      ]
+    },
+    {
+      "id": "order_call_chain",
+      "question": "Which functions does POST /api/orders run, and who calls the HTTP handlers?",
+      "plan": [
+        {"tool": "codegraph_get_call_graph", "target": {"file": "api/app/routes/orders.py", "line": 10}, "args": {"direction": "callees", "depth": 1}},
+        {"tool": "codegraph_get_callees", "target": {"file": "api/app/services/order_service.py", "line": 14}, "args": {"depth": 1}},
+        {"tool": "codegraph_get_callees", "target": {"file": "api/app/services/order_service.py", "line": 11}, "args": {"depth": 1}},
+        {"tool": "codegraph_get_callers", "target": {"file": "api/app/main.py", "line": 10}, "args": {"depth": 1}},
+        {"tool": "codegraph_get_callers", "target": {"file": "api/app/routes/orders.py", "line": 10}, "args": {"depth": 1}},
+        {"tool": "codegraph_get_callers", "target": {"file": "payments/main.go", "line": 13}, "args": {"depth": 1}}
+      ],
+      "facts": [],
+      "expected_edges": [
+        ["api/app/routes/orders.py::create_order", "api/app/services/order_service.py::OrderService"],
+        ["api/app/routes/orders.py::create_order", "api/app/services/order_service.py::place_order"],
+        ["api/app/services/order_service.py::place_order", "api/app/repositories/order_repo.py::save"],
+        ["api/app/services/order_service.py::place_order", "api/app/clients/payments.py::charge_card"],
+        ["api/app/services/order_service.py::place_order", "api/app/repositories/order_repo.py::mark_status"],
+        ["api/app/services/order_service.py::place_order", "api/app/events.py::publish"],
+        ["api/app/services/order_service.py::place_order", "api/app/services/order_service.py::PaymentDeclined"],
+        ["api/app/services/order_service.py::__init__", "api/app/repositories/order_repo.py::OrderRepository"],
+        ["web/src/api/orders.ts::checkHealth", "api/app/main.py::health"],
+        ["web/src/api/orders.ts::submitOrder", "api/app/routes/orders.py::create_order"],
+        ["api/app/clients/payments.py::charge_card", "payments/main.go::chargeHandler"]
+      ]
+    }
+  ],
+  "true_edges": [
+    ["web/src/pages/Checkout.tsx::onPay", "web/src/api/orders.ts::submitOrder", "call"],
+    ["web/src/pages/Checkout.tsx::Checkout", "web/src/api/orders.ts::submitOrder", "call"],
+    ["web/src/api/orders.ts::submitOrder", "api/app/routes/orders.py::create_order", "http"],
+    ["web/src/api/orders.ts::loadOrder", "api/app/routes/orders.py::get_order", "http"],
+    ["web/src/api/orders.ts::checkHealth", "api/app/main.py::health", "http"],
+    ["api/app/routes/orders.py::create_order", "api/app/services/order_service.py::OrderService", "call"],
+    ["api/app/routes/orders.py::create_order", "api/app/services/order_service.py::place_order", "call"],
+    ["api/app/routes/orders.py::get_order", "api/app/services/order_service.py::OrderService", "call"],
+    ["api/app/routes/orders.py::get_order", "api/app/services/order_service.py::find", "call"],
+    ["api/app/services/order_service.py::__init__", "api/app/repositories/order_repo.py::OrderRepository", "call"],
+    ["api/app/services/order_service.py::place_order", "api/app/repositories/order_repo.py::save", "call"],
+    ["api/app/services/order_service.py::place_order", "api/app/clients/payments.py::charge_card", "call"],
+    ["api/app/services/order_service.py::place_order", "api/app/repositories/order_repo.py::mark_status", "call"],
+    ["api/app/services/order_service.py::place_order", "api/app/events.py::publish", "call"],
+    ["api/app/services/order_service.py::place_order", "api/app/services/order_service.py::PaymentDeclined", "call"],
+    ["api/app/services/order_service.py::find", "api/app/repositories/order_repo.py::get", "call"],
+    ["api/app/repositories/order_repo.py::save", "api/app/models/order.py::Order", "call"],
+    ["api/app/clients/payments.py::charge_card", "payments/main.go::chargeHandler", "http"],
+    ["api/app/events.py::publish", "worker/consumers.py::handle_order_created", "event"],
+    ["worker/consumers.py::run", "worker/consumers.py::handle_order_created", "call"],
+    ["worker/consumers.py::handle_order_created", "worker/consumers.py::send_receipt_email", "call"]
+  ]
+}

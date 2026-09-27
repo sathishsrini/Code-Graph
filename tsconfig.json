@@ -20,5 +20,5 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"],
-  "exclude": ["node_modules", "dist", ".codeintel"]
+  "exclude": ["node_modules", "dist", ".codeintel", "tests/fixtures/orders_app"]
 }
