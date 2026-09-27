@@ -235,7 +235,8 @@ describe("scoring one question", () => {
 });
 
 // ---------------------------------------------------------------------------
-// CTX-S2: corpus mode reads line ranges, not whole files
+// CTX-S2: line ranges. The gate charges whole files (owner, 2026-09-27); the
+// cited lines are reported beside it for information only.
 // ---------------------------------------------------------------------------
 
 describe("reading line ranges (CTX-S2 corpus mode)", () => {
@@ -264,7 +265,10 @@ describe("reading line ranges (CTX-S2 corpus mode)", () => {
     assert.throws(() => readRangesCost(enc("a\nb\n"), [[2, 1]]), /start.*end/);
   });
 
-  test("scoring charges each file's merged ranges: every fact for the baseline, missing ones for the fallback", () => {
+  test("scoring charges whole files for the baseline and the fallback; the cited lines are only reported", () => {
+    // G5 compares against "reading the files" (owner, 2026-09-27): without the
+    // graph Claude reads the files, and a fact the graph missed sends it to the
+    // file, not to a line range it has no way to know.
     const question: GoldenQuestion = {
       id: "r",
       question: "?",
@@ -290,10 +294,10 @@ describe("reading line ranges (CTX-S2 corpus mode)", () => {
       fileCost,
     });
     assert.deepEqual(r.facts_missing, ["b (s/x.js:20)", "c (s/x.js:8)"]);
-    assert.equal(r.baseline_bytes, 8 + 3 + 1, "x.js [5-12]+[20-22], y.py [3]");
-    assert.equal(r.fallback_bytes, 5 + 3, "x.js [8-12]+[20-22]: only the missing facts' lines");
-    assert.equal(r.total_bytes, 4 + 8);
-    assert.equal(r.baseline_file_bytes, 2000, "the whole-file figure is kept beside it for comparison");
+    assert.equal(r.baseline_bytes, 2000, "x.js and y.py, whole");
+    assert.equal(r.fallback_bytes, 1000, "x.js, whole: the file of the missing facts, counted once");
+    assert.equal(r.total_bytes, 4 + 1000);
+    assert.equal(r.baseline_cited_bytes, 8 + 3 + 1, "x.js [5-12]+[20-22], y.py [3], for information");
     assert.ok(seen.includes("s/x.js [[5,12],[20,22]]"), seen.join(" | "));
   });
 
@@ -312,7 +316,7 @@ describe("reading line ranges (CTX-S2 corpus mode)", () => {
     });
     assert.equal(r.baseline_bytes, 1000);
     assert.equal(r.fallback_bytes, 1000);
-    assert.equal(r.baseline_file_bytes, 1000);
+    assert.equal(r.baseline_cited_bytes, 1000, "a file with an unranged fact is cited whole");
 
     // An empty list is no ranges, not a free read.
     const empty = scoreQuestion({
@@ -323,16 +327,16 @@ describe("reading line ranges (CTX-S2 corpus mode)", () => {
     assert.equal(empty.baseline_bytes, 1000);
   });
 
-  test("the fixture bench's results carry no whole-file figure, so its report is unchanged", () => {
+  test("the fixture bench's results carry no cited-lines figure, so its report is unchanged", () => {
     const r = scoreQuestion({
       question: { id: "f", question: "?", facts: [{ id: "a", file: "x.py", line: 1, evidence: "E" }] },
       steps: [], texts: ["E"], returned: new Set(), trueEdges: new Set(), fileCost: () => 10,
     });
-    assert.equal(r.baseline_file_bytes, undefined);
-    assert.doesNotMatch(formatReport([r], 0, "s"), /whole files/);
+    assert.equal(r.baseline_cited_bytes, undefined);
+    assert.doesNotMatch(formatReport([r], 0, "s"), /cited lines/);
   });
 
-  test("the report prints the whole-file figure beside the range baseline", () => {
+  test("the report prints the cited-lines figure beside the whole-file baseline", () => {
     const r = scoreQuestion({
       question: { id: "g", question: "?", facts: [{ id: "a", file: "x.js", line: 2, evidence: "E", ranges: [[2, 2]] }] },
       steps: [], texts: [""], returned: new Set(), trueEdges: new Set(),
@@ -340,7 +344,7 @@ describe("reading line ranges (CTX-S2 corpus mode)", () => {
     });
     assert.match(
       formatReport([r], 0, "s"),
-      /vs reading files 40 B \(~10 tok\)\s+-> x1\.00\s+\(whole files 4,000 B, ~1,000 tok\)/,
+      /vs reading files 4,000 B \(~1,000 tok\)\s+-> x1\.00\s+\(cited lines only 40 B, ~10 tok\)/,
     );
   });
 

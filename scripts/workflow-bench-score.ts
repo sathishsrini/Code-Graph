@@ -26,11 +26,13 @@
 // already measured:
 //
 //   line ranges     a fact may carry the 1-based line ranges that answer it.
-//                   A file whose facts all have ranges is charged for those
-//                   lines only (merged, same Read accounting); a file with a
-//                   rangeless fact is charged whole, as before. The corpus
-//                   golden has ranges everywhere; orders_app has none, so its
-//                   numbers and its report are unchanged.
+//                   They are validated against the file and reported as the
+//                   "cited lines" figure, for information. The gate charges
+//                   WHOLE files for both reading-the-files and still-to-read
+//                   (owner decision, 2026-09-27): without the graph Claude
+//                   reads the files, and a fact the graph missed sends it to
+//                   the file, not to lines it has no way to know. orders_app
+//                   has no ranges, so its numbers and report are unchanged.
 //   the gate        G5's per-question test as a pure verdict: graph +
 //                   still-to-read must be strictly below reading the files,
 //                   AND no required fact may be missing. Any one failing
@@ -102,10 +104,11 @@ export interface QuestionResult {
   total_bytes: number;
   baseline_bytes: number;
   /**
-   * Reading the same files whole. Present only when facts carry ranges, so
-   * a range baseline is never quoted without the whole-file cost beside it.
+   * Reading only the cited lines (merged ranges; a file with a rangeless fact
+   * counts whole). Present only when facts carry ranges. Information only:
+   * the gate compares against `baseline_bytes`, the whole files.
    */
-  baseline_file_bytes?: number;
+  baseline_cited_bytes?: number;
   edges_returned: number;
   false_edges: string[];
   expected_edges: number;
@@ -416,8 +419,10 @@ export function scoreQuestion(input: {
   const cost = (reads: Array<[string, LineRange[] | undefined]>): number =>
     reads.reduce((n, [file, ranges]) => n + fileCost(file, ranges), 0);
   const graphBytes = steps.reduce((n, s) => n + s.bytes, 0);
-  const fallbackBytes = cost(readsFor(missing));
-  const baselineBytes = cost(readsFor(facts));
+  const wholeFiles = (fs: Fact[]): number =>
+    sorted(new Set(fs.map((f) => f.file))).reduce((n, f) => n + fileCost(f), 0);
+  const fallbackBytes = wholeFiles(missing);
+  const baselineBytes = wholeFiles(facts);
   const ranged = facts.some((f) => rangesOf(f));
 
   const expected = new Set((question.expected_edges ?? []).map((e) => edgeKey(e)));
@@ -431,9 +436,7 @@ export function scoreQuestion(input: {
     fallback_bytes: fallbackBytes,
     total_bytes: graphBytes + fallbackBytes,
     baseline_bytes: baselineBytes,
-    ...(ranged
-      ? { baseline_file_bytes: sorted(new Set(facts.map((f) => f.file))).reduce((n, f) => n + fileCost(f), 0) }
-      : {}),
+    ...(ranged ? { baseline_cited_bytes: cost(readsFor(facts)) } : {}),
     edges_returned: returned.size,
     false_edges: sorted([...returned].filter((e) => !trueEdges.has(e))),
     expected_edges: expected.size,
@@ -465,8 +468,8 @@ export function formatReport(
         `   graph ${commas(r.graph_bytes)} B + still-to-read ${commas(r.fallback_bytes)} B = ` +
         `${commas(r.total_bytes)} B (~${commas(tokens(r.total_bytes))} tok)   vs reading files ` +
         `${commas(r.baseline_bytes)} B (~${commas(tokens(r.baseline_bytes))} tok)   -> x${ratio.toFixed(2)}` +
-        (r.baseline_file_bytes === undefined ? "" :
-          `   (whole files ${commas(r.baseline_file_bytes)} B, ~${commas(tokens(r.baseline_file_bytes))} tok)`),
+        (r.baseline_cited_bytes === undefined ? "" :
+          `   (cited lines only ${commas(r.baseline_cited_bytes)} B, ~${commas(tokens(r.baseline_cited_bytes))} tok)`),
       );
       for (const fact of r.facts_missing) out.push(`     missing: ${fact}`);
     }
