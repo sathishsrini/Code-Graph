@@ -1,0 +1,108 @@
+{
+  "corpus": "config/repos.json",
+  "provenance": "Written 2026-09-27 from the answer keys in docs/ab-token-check.md §2 (Q1 end-to-end flow of POST /api/v1/po, Q2 its error statuses, Q3 edit context for checkUserAuth), which were taken from the corpus source with file:line. Nothing here was taken from the graph: a key built from the graph rewards the graph for agreeing with itself. Each fact's `key` names the answer-key fact it comes from (Q<question>.<fact>). The API -> tables question reuses Q1's table facts 8, 9 and 11. The feature-by-description question is the phrase 'send mail' (plan §2.8) resolved to 51-integration POST /api/v1/mail/send at main.py:111 ('route :111' in Q1.11), plus Q1.10 and Q1.11.",
+  "description": "Ground truth for CTX-S2's corpus mode of scripts/workflow-bench.ts (goal G5). The corpus is the four repos in config/repos.json; a fact's `file` is '<repo name>/<path inside that repo>', resolved against that repo's rootPath, so no machine path is written here. `line` is the key's first cited line; `ranges` are 1-based inclusive line ranges and are exactly the lines the key cites, so 'reading the files' is what a reader who already knows where to look pays, a lower bound, and the report prints the whole-file cost beside it. Where the key gives a line as '≈', the fact is marked `approx` and its range is widened by 10 lines each side (the note says so). `evidence` is matched as a verbatim substring of the tool responses (scoreQuestion): it is a string the key itself writes in code font, or the service or route the key names, chosen as the most specific marker of that fact. A key fact that lists several items (Q3.4's nine routes, Q3.6's exemptions) is split into one sub-fact per item, each keeping the key fact's `key`, so every item is checked. Edges are not scored in corpus mode: there is no edge truth for the corpus. Bonus items in the key are not required facts and are left out.",
+  "questions": [
+    {
+      "id": "po_endpoint_flow",
+      "kind": "endpoint_flow",
+      "question": "What happens end to end when a client calls POST /api/v1/po on 40-kri-router? List, in order: the hooks and auth checks that run, the functions called, every other service it calls, and every database table read or written. Cite file:line for each item.",
+      "facts": [
+        {"id": "router_onrequest_hook", "key": "Q1.1", "file": "40-kri-router/server.js", "line": 36, "ranges": [[36, 45]], "evidence": "onRequest"},
+        {"id": "handler_is_proxyToEngine", "key": "Q1.2", "file": "40-kri-router/server.js", "line": 281, "ranges": [[168, 168], [281, 281]], "evidence": "proxyToEngine"},
+        {"id": "checkUserAuth_runs_first", "key": "Q1.3", "file": "40-kri-router/server.js", "line": 169, "ranges": [[76, 86], [169, 169]], "evidence": "checkUserAuth"},
+        {"id": "forwards_to_engine", "key": "Q1.4", "file": "40-kri-router/server.js", "line": 176, "ranges": [[7, 7], [55, 69], [176, 186]], "evidence": "41-kri-engine",
+          "note": "The target service's name: a response carries it only when the router -> engine hop is resolved. ENGINE_BASE_URL in a gap row does not earn this fact."},
+        {"id": "procurement_fork", "key": "Q1.5", "file": "40-kri-router/server.js", "line": 172, "ranges": [[172, 176]], "evidence": "PROCUREMENT_BASE_URL"},
+        {"id": "engine_serviceAuth", "key": "Q1.6", "file": "41-kri-engine/server.js", "line": 196, "ranges": [[77, 89], [196, 196]], "evidence": "serviceAuth"},
+        {"id": "engine_validatePO", "key": "Q1.7", "file": "41-kri-engine/server.js", "line": 198, "ranges": [[183, 193], [198, 203]], "evidence": "validatePO"},
+        {"id": "engine_reads_purchase_orders", "key": "Q1.8", "file": "41-kri-engine/server.js", "line": 209, "ranges": [[199, 224]], "evidence": "purchase_orders", "approx": true,
+          "note": "The key gives ≈209–214; the range is widened by 10 lines each side. A substring cannot tell a read from a write of one table, so this fact and engine_inserts_purchase_orders share their evidence and are found or missed together."},
+        {"id": "engine_inserts_purchase_orders", "key": "Q1.9", "file": "41-kri-engine/server.js", "line": 215, "ranges": [[205, 232]], "evidence": "purchase_orders", "approx": true,
+          "note": "The key gives ≈215–222; the range is widened by 10 lines each side. Shares its evidence with engine_reads_purchase_orders (see there)."},
+        {"id": "router_calls_mail_send", "key": "Q1.10", "file": "40-kri-router/server.js", "line": 216, "ranges": [[180, 244]], "evidence": "51-integration", "approx": true,
+          "note": "The key gives ≈190–234 (the URL line :216 is exact); the range is widened by 10 lines each side. As with forwards_to_engine, the evidence is the target service, named only when the hop is resolved."},
+        {"id": "integration_inserts_mail_events", "key": "Q1.11", "file": "51-integration/main.py", "line": 143, "ranges": [[111, 111], [143, 143]], "evidence": "mail_events"},
+        {"id": "mail_failure_does_not_fail_po", "key": "Q1.12", "file": "40-kri-router/server.js", "line": 228, "ranges": [[218, 250]], "evidence": "FAILED", "approx": true,
+          "note": "The key gives ≈228–240; the range is widened by 10 lines each side. The key writes `email.status = FAILED`; only the literal FAILED is certain to be verbatim in the source, so it is the evidence."},
+        {"id": "router_onresponse_hook", "key": "Q1.13", "file": "40-kri-router/server.js", "line": 46, "ranges": [[46, 49]], "evidence": "onResponse"}
+      ]
+    },
+    {
+      "id": "send_mail_feature",
+      "kind": "feature_by_description",
+      "question": "Which code sends mail? Name the service and the route that implement it, and the table it records each send in.",
+      "note": "The router also registers POST /api/v1/mail/send (Q3.3), so the route alone does not answer this; the service fact is what separates 51-integration's route from the router's.",
+      "facts": [
+        {"id": "mail_send_route", "key": "Q1.11", "file": "51-integration/main.py", "line": 111, "ranges": [[111, 111]], "evidence": "POST /api/v1/mail/send"},
+        {"id": "mail_send_service", "key": "Q1.10", "file": "51-integration/main.py", "line": 111, "ranges": [[111, 111]], "evidence": "51-integration"},
+        {"id": "mail_send_records_mail_events", "key": "Q1.11", "file": "51-integration/main.py", "line": 143, "ranges": [[143, 143]], "evidence": "mail_events"}
+      ]
+    },
+    {
+      "id": "check_user_auth_edit",
+      "kind": "edit_context",
+      "question": "I want to change checkUserAuth in 40-kri-router so it also rejects requests without an X-Correlation-ID header. Before I edit anything: where is it defined, what calls it, which routes would be affected, and which paths are exempt? Cite file:line. Do not make the change.",
+      "note": "Q3.4 (nine routes) and Q3.6 (exemptions) are split into one sub-fact per item. Route evidence is 'METHOD path', the notation the key uses; 'GET /api/v1/po' is also a substring of 'GET /api/v1/po/:id' (likewise grn and bill), a known leniency of substring matching.",
+      "facts": [
+        {"id": "defined_in_router_server_js", "key": "Q3.1", "file": "40-kri-router/server.js", "line": 76, "ranges": [[76, 86]], "evidence": "server.js",
+          "note": "The answer is the file; context_pack and impact print the seed's repo-relative file."},
+        {"id": "called_by_proxyToEngine", "key": "Q3.2", "file": "40-kri-router/server.js", "line": 169, "ranges": [[169, 169]], "evidence": "proxyToEngine"},
+        {"id": "called_by_mail_send_handler", "key": "Q3.3", "file": "40-kri-router/server.js", "line": 292, "ranges": [[292, 292]], "evidence": "/api/v1/mail/send",
+          "note": "The handler is anonymous and registered for this path; the evidence is the path, so a response listing the route earns it as well as one listing the handler."},
+        {"id": "guards_GET_po", "key": "Q3.4", "file": "40-kri-router/server.js", "line": 280, "ranges": [[280, 288]], "evidence": "GET /api/v1/po"},
+        {"id": "guards_POST_po", "key": "Q3.4", "file": "40-kri-router/server.js", "line": 280, "ranges": [[280, 288]], "evidence": "POST /api/v1/po"},
+        {"id": "guards_GET_po_id", "key": "Q3.4", "file": "40-kri-router/server.js", "line": 280, "ranges": [[280, 288]], "evidence": "GET /api/v1/po/:id"},
+        {"id": "guards_GET_grn", "key": "Q3.4", "file": "40-kri-router/server.js", "line": 280, "ranges": [[280, 288]], "evidence": "GET /api/v1/grn"},
+        {"id": "guards_POST_grn", "key": "Q3.4", "file": "40-kri-router/server.js", "line": 280, "ranges": [[280, 288]], "evidence": "POST /api/v1/grn"},
+        {"id": "guards_GET_grn_id", "key": "Q3.4", "file": "40-kri-router/server.js", "line": 280, "ranges": [[280, 288]], "evidence": "GET /api/v1/grn/:id"},
+        {"id": "guards_GET_bill", "key": "Q3.4", "file": "40-kri-router/server.js", "line": 280, "ranges": [[280, 288]], "evidence": "GET /api/v1/bill"},
+        {"id": "guards_POST_bill", "key": "Q3.4", "file": "40-kri-router/server.js", "line": 280, "ranges": [[280, 288]], "evidence": "POST /api/v1/bill"},
+        {"id": "guards_GET_bill_id", "key": "Q3.4", "file": "40-kri-router/server.js", "line": 280, "ranges": [[280, 288]], "evidence": "GET /api/v1/bill/:id"},
+        {"id": "ten_routes_affected", "key": "Q3.5", "file": "40-kri-router/server.js", "line": 291, "ranges": [[280, 291]], "evidence": "POST /api/v1/mail/send",
+          "note": "The tenth route. The other nine are Q3.4's sub-facts; the count itself is not matchable as a substring."},
+        {"id": "exempt_isPublicAuthPath", "key": "Q3.6", "file": "40-kri-router/server.js", "line": 77, "ranges": [[71, 73], [77, 77]], "evidence": "isPublicAuthPath"},
+        {"id": "exempt_login", "key": "Q3.6", "file": "40-kri-router/server.js", "line": 71, "ranges": [[71, 73]], "evidence": "/api/v1/auth/login"},
+        {"id": "exempt_register", "key": "Q3.6", "file": "40-kri-router/server.js", "line": 71, "ranges": [[71, 73]], "evidence": "/api/v1/auth/register"},
+        {"id": "exempt_health", "key": "Q3.6", "file": "40-kri-router/server.js", "line": 77, "ranges": [[77, 77]], "evidence": "/health"},
+        {"id": "exempt_ready", "key": "Q3.6", "file": "40-kri-router/server.js", "line": 77, "ranges": [[77, 77]], "evidence": "/ready"},
+        {"id": "login_register_via_proxyAuth", "key": "Q3.6", "file": "40-kri-router/server.js", "line": 164, "ranges": [[164, 165]], "evidence": "proxyAuth"},
+        {"id": "onRequest_already_sets_correlation_id", "key": "Q3.7", "file": "40-kri-router/server.js", "line": 38, "ranges": [[38, 38]], "evidence": "correlationId",
+          "note": "The key writes `req.correlationId`; the property name is the evidence, as the request variable's name is not given."}
+      ]
+    },
+    {
+      "id": "po_error_statuses",
+      "kind": "error_origin",
+      "question": "A client calling POST /api/v1/po on 40-kri-router got an error response. List every HTTP status this request can return, with its error code and the service, function and file:line that produces it. Say which come from the router itself and which are passed through from downstream.",
+      "facts": [
+        {"id": "router_401_missing_bearer", "key": "Q2.1", "file": "40-kri-router/server.js", "line": 80, "ranges": [[80, 82]], "evidence": "KRI40-AUTH-001"},
+        {"id": "router_502_downstream_unavailable", "key": "Q2.2", "file": "40-kri-router/server.js", "line": 262, "ranges": [[262, 275]], "evidence": "KRI40-DOWNSTREAM-UNAVAILABLE-001"},
+        {"id": "router_504_downstream_timeout", "key": "Q2.3", "file": "40-kri-router/server.js", "line": 263, "ranges": [[55, 55], [263, 270]], "evidence": "KRI40-DOWNSTREAM-TIMEOUT-001"},
+        {"id": "engine_statuses_pass_through", "key": "Q2.4", "file": "40-kri-router/server.js", "line": 66, "ranges": [[66, 66], [261, 261]], "evidence": "validateStatus",
+          "note": "The key quotes `validateStatus: () => true`; the property name is the evidence, as the source's spacing is not given."},
+        {"id": "engine_401_service_auth", "key": "Q2.5", "file": "41-kri-engine/server.js", "line": 80, "ranges": [[80, 88]], "evidence": "KRI41-AUTH-001"},
+        {"id": "engine_422_validate", "key": "Q2.6", "file": "41-kri-engine/server.js", "line": 198, "ranges": [[198, 203]], "evidence": "KRI41-PO-VALIDATE-001"},
+        {"id": "engine_409_duplicate", "key": "Q2.7", "file": "41-kri-engine/server.js", "line": 210, "ranges": [[200, 224], [215, 239]], "evidence": "KRI41-PO-DUPLICATE-001", "approx": true,
+          "note": "The key gives ≈210–214 (the duplicate check) and ≈225–229 (the unique-violation 23505); each range is widened by 10 lines each side."},
+        {"id": "engine_500_db", "key": "Q2.8", "file": "41-kri-engine/server.js", "line": 230, "ranges": [[220, 243]], "evidence": "KRI41-PO-DB-001", "approx": true,
+          "note": "The key gives ≈230–233; the range is widened by 10 lines each side."},
+        {"id": "mail_failure_not_an_error", "key": "Q2.9", "file": "40-kri-router/server.js", "line": 228, "ranges": [[218, 250]], "evidence": "FAILED", "approx": true,
+          "note": "The key gives ≈228–240; the range is widened by 10 lines each side. The evidence is the literal FAILED, as in Q1.12."}
+      ]
+    },
+    {
+      "id": "po_tables",
+      "kind": "api_tables",
+      "question": "Which database tables does POST /api/v1/po on 40-kri-router read or write, in any service it reaches? For each, name the service and say whether it is read or written.",
+      "note": "Q1's table facts 8, 9 and 11. A substring cannot tell a read from a write, so the two purchase_orders facts share their evidence.",
+      "facts": [
+        {"id": "engine_reads_purchase_orders", "key": "Q1.8", "file": "41-kri-engine/server.js", "line": 209, "ranges": [[199, 224]], "evidence": "purchase_orders", "approx": true,
+          "note": "The key gives ≈209–214; the range is widened by 10 lines each side."},
+        {"id": "engine_writes_purchase_orders", "key": "Q1.9", "file": "41-kri-engine/server.js", "line": 215, "ranges": [[205, 232]], "evidence": "purchase_orders", "approx": true,
+          "note": "The key gives ≈215–222; the range is widened by 10 lines each side."},
+        {"id": "integration_writes_mail_events", "key": "Q1.11", "file": "51-integration/main.py", "line": 143, "ranges": [[111, 111], [143, 143]], "evidence": "mail_events"}
+      ]
+    }
+  ]
+}

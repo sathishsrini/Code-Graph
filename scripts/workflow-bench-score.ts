@@ -21,31 +21,56 @@
 // edge extraction reads TOON tables and maps each path back to the workspace.
 // No I/O lives here — the driver (workflow-bench.ts) owns the process and the
 // file system, so everything below is testable with strings.
+//
+// CTX-S2 (goal G5) adds two things, and changes nothing the fixture bench
+// already measured:
+//
+//   line ranges     a fact may carry the 1-based line ranges that answer it.
+//                   A file whose facts all have ranges is charged for those
+//                   lines only (merged, same Read accounting); a file with a
+//                   rangeless fact is charged whole, as before. The corpus
+//                   golden has ranges everywhere; orders_app has none, so its
+//                   numbers and its report are unchanged.
+//   the gate        G5's per-question test as a pure verdict: graph +
+//                   still-to-read must be strictly below reading the files,
+//                   AND no required fact may be missing. Any one failing
+//                   question fails the run.
 // ============================================================================
 
 /** `"     1\t"` per line in the Read tool's output. */
 export const READ_GUTTER_BYTES = 7;
 export const BYTES_PER_TOKEN = 4;
 
+/** 1-based, inclusive: `[start, end]`. */
+export type LineRange = readonly [number, number];
+
 export interface Fact {
   id: string;
   file: string;
   line: number;
   evidence: string;
+  /** Lines of `file` that answer the fact (CTX-S2). Absent: the whole file. */
+  ranges?: LineRange[];
 }
 
 export interface GoldenQuestion {
   id: string;
   question: string;
+  /** What kind of question this is (corpus golden only). Not scored. */
+  kind?: string;
   facts?: Fact[];
   expected_edges?: Array<[string, string]>;
 }
 
 export interface Golden {
-  fixture: string;
+  /** Fixture mode: the fixture directory, relative to the repo root. */
+  fixture?: string;
+  /** Corpus mode: the config whose repos the fact files live in (CTX-S2). */
+  corpus?: string;
   description?: string;
   questions: GoldenQuestion[];
-  true_edges: Array<[string, string, string]>;
+  /** Absent or empty: there is no edge truth, and edges are not scored. */
+  true_edges?: Array<[string, string, string]>;
 }
 
 /** One service code-intel indexes, rooted at a workspace-relative directory. */
@@ -76,6 +101,11 @@ export interface QuestionResult {
   fallback_bytes: number;
   total_bytes: number;
   baseline_bytes: number;
+  /**
+   * Reading the same files whole. Present only when facts carry ranges, so
+   * a range baseline is never quoted without the whole-file cost beside it.
+   */
+  baseline_file_bytes?: number;
   edges_returned: number;
   false_edges: string[];
   expected_edges: number;
@@ -123,6 +153,57 @@ export function tokens(bytes: number): number {
   if (diff > 0.5) return floor + 1;
   if (diff < 0.5) return floor;
   return floor % 2 === 0 ? floor : floor + 1;
+}
+
+/** Sorted, with overlapping or touching ranges joined. */
+export function mergeRanges(ranges: readonly LineRange[]): LineRange[] {
+  const out: Array<[number, number]> = [];
+  for (const [s, e] of [...ranges].sort((a, b) => a[0] - b[0] || a[1] - b[1])) {
+    const last = out[out.length - 1];
+    if (last && s <= last[1] + 1) last[1] = Math.max(last[1], e);
+    else out.push([s, e]);
+  }
+  return out;
+}
+
+/**
+ * What reading only these lines costs, with readCost's accounting (CTX-S2).
+ * A range outside the file throws rather than clamping: it means the golden
+ * is out of date with the corpus, and a clamp would quietly shrink the
+ * baseline the gate compares against.
+ */
+export function readRangesCost(data: Uint8Array, ranges: readonly LineRange[]): number {
+  // Byte offset where each line starts; a last line without "\n" still counts.
+  const starts = [0];
+  for (let i = 0; i < data.length; i += 1) {
+    if (data[i] === 0x0a && i + 1 < data.length) starts.push(i + 1);
+  }
+  const lineCount = data.length === 0 ? 0 : starts.length;
+  for (const [s, e] of ranges) {
+    if (s < 1) throw new RangeError(`ranges are 1-based: got ${s}-${e}`);
+    if (s > e) throw new RangeError(`range ${s}-${e} has its start after its end`);
+    if (e > lineCount) {
+      throw new RangeError(`range ${s}-${e} runs to line ${e}, past the end of the file (${lineCount} lines)`);
+    }
+  }
+  let cost = 0;
+  for (const [s, e] of mergeRanges(ranges)) {
+    cost += readCost(data.subarray(starts[s - 1]!, e < lineCount ? starts[e]! : data.length));
+  }
+  return cost;
+}
+
+/**
+ * A corpus golden names files `<repo>/<path>`; the repo's `rootPath` comes
+ * from the real config, so the golden holds no machine-specific path.
+ */
+export function corpusPath(
+  file: string, repos: ReadonlyArray<{ name: string; rootPath: string }>,
+): string | null {
+  const slash = file.indexOf("/");
+  if (slash <= 0) return null;
+  const repo = repos.find((r) => r.name === file.slice(0, slash));
+  return repo ? `${repo.rootPath.replace(/[\\/]+$/, "")}/${file.slice(slash + 1)}` : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +377,26 @@ export function edgesIn(
 
 const sorted = (xs: Iterable<string>): string[] => [...xs].sort();
 
+/** A fact's ranges, or undefined for "the whole file". An empty list is no ranges, never a free read. */
+const rangesOf = (f: Fact): LineRange[] | undefined => (f.ranges?.length ? f.ranges : undefined);
+
+/**
+ * The reads a set of facts needs: each file once, with its facts' ranges
+ * merged, or `undefined` (the whole file) as soon as one fact has no ranges.
+ */
+function readsFor(facts: readonly Fact[]): Array<[string, LineRange[] | undefined]> {
+  const byFile = new Map<string, LineRange[] | undefined>();
+  for (const f of facts) {
+    const ranges = rangesOf(f);
+    const whole = !ranges || (byFile.has(f.file) && byFile.get(f.file) === undefined);
+    byFile.set(f.file, whole ? undefined : [...(byFile.get(f.file) ?? []), ...ranges]);
+  }
+  return sorted(byFile.keys()).map((file) => {
+    const ranges = byFile.get(file);
+    return [file, ranges ? mergeRanges(ranges) : undefined];
+  });
+}
+
 export function scoreQuestion(input: {
   question: GoldenQuestion;
   steps: StepRecord[];
@@ -304,19 +405,20 @@ export function scoreQuestion(input: {
   /** Edge keys (`edgeKey`) the responses asserted. */
   returned: ReadonlySet<string>;
   trueEdges: ReadonlySet<string>;
-  /** Read cost of a workspace-relative file. */
-  fileCost: (file: string) => number;
+  /** Read cost of a file: only `ranges` when given (CTX-S2), else all of it. */
+  fileCost: (file: string, ranges?: readonly LineRange[]) => number;
 }): QuestionResult {
   const { question, steps, returned, trueEdges, fileCost } = input;
   const seen = input.texts.join("\n");
   const facts = question.facts ?? [];
   const covered = facts.filter((f) => seen.includes(f.evidence));
   const missing = facts.filter((f) => !seen.includes(f.evidence));
-  const fallbackFiles = sorted(new Set(missing.map((f) => f.file)));
-  const baselineFiles = sorted(new Set(facts.map((f) => f.file)));
+  const cost = (reads: Array<[string, LineRange[] | undefined]>): number =>
+    reads.reduce((n, [file, ranges]) => n + fileCost(file, ranges), 0);
   const graphBytes = steps.reduce((n, s) => n + s.bytes, 0);
-  const fallbackBytes = fallbackFiles.reduce((n, f) => n + fileCost(f), 0);
-  const baselineBytes = baselineFiles.reduce((n, f) => n + fileCost(f), 0);
+  const fallbackBytes = cost(readsFor(missing));
+  const baselineBytes = cost(readsFor(facts));
+  const ranged = facts.some((f) => rangesOf(f));
 
   const expected = new Set((question.expected_edges ?? []).map((e) => edgeKey(e)));
   return {
@@ -329,6 +431,9 @@ export function scoreQuestion(input: {
     fallback_bytes: fallbackBytes,
     total_bytes: graphBytes + fallbackBytes,
     baseline_bytes: baselineBytes,
+    ...(ranged
+      ? { baseline_file_bytes: sorted(new Set(facts.map((f) => f.file))).reduce((n, f) => n + fileCost(f), 0) }
+      : {}),
     edges_returned: returned.size,
     false_edges: sorted([...returned].filter((e) => !trueEdges.has(e))),
     expected_edges: expected.size,
@@ -359,7 +464,9 @@ export function formatReport(
       out.push(
         `   graph ${commas(r.graph_bytes)} B + still-to-read ${commas(r.fallback_bytes)} B = ` +
         `${commas(r.total_bytes)} B (~${commas(tokens(r.total_bytes))} tok)   vs reading files ` +
-        `${commas(r.baseline_bytes)} B (~${commas(tokens(r.baseline_bytes))} tok)   -> x${ratio.toFixed(2)}`,
+        `${commas(r.baseline_bytes)} B (~${commas(tokens(r.baseline_bytes))} tok)   -> x${ratio.toFixed(2)}` +
+        (r.baseline_file_bytes === undefined ? "" :
+          `   (whole files ${commas(r.baseline_file_bytes)} B, ~${commas(tokens(r.baseline_file_bytes))} tok)`),
       );
       for (const fact of r.facts_missing) out.push(`     missing: ${fact}`);
     }
@@ -373,5 +480,81 @@ export function formatReport(
     }
     out.push("");
   }
+  return `${out.join("\n")}\n`;
+}
+
+// ---------------------------------------------------------------------------
+// The G5 gate (CTX-S2)
+// ---------------------------------------------------------------------------
+
+export type GateCondition = "tokens" | "fact" | "empty";
+
+export interface GateFailure {
+  question: string;
+  condition: GateCondition;
+  detail: string;
+}
+
+export interface GateVerdict {
+  pass: boolean;
+  /** Questions the gate judged: those with at least one fact. */
+  gated: number;
+  failures: GateFailure[];
+  /**
+   * Questions with no facts (edges-only, like orders_app's order_call_chain).
+   * They have no reading-the-files baseline, so G5 says nothing about them;
+   * they are listed, never counted as passing.
+   */
+  notGated: string[];
+}
+
+/**
+ * G5, per question: graph + still-to-read strictly below reading the files,
+ * and every required fact present. One failing question fails the run, and
+ * a run with nothing to judge does not pass.
+ */
+export function gate(results: readonly QuestionResult[]): GateVerdict {
+  const failures: GateFailure[] = [];
+  const notGated: string[] = [];
+  let gated = 0;
+  for (const r of results) {
+    if (r.facts_total === 0) {
+      notGated.push(r.id);
+      continue;
+    }
+    gated += 1;
+    if (r.total_bytes >= r.baseline_bytes) {
+      failures.push({
+        question: r.id,
+        condition: "tokens",
+        detail:
+          `graph + still-to-read ${commas(r.total_bytes)} B (~${commas(tokens(r.total_bytes))} tok) ` +
+          `>= reading the files ${commas(r.baseline_bytes)} B (~${commas(tokens(r.baseline_bytes))} tok)`,
+      });
+    }
+    for (const fact of r.facts_missing) failures.push({ question: r.id, condition: "fact", detail: fact });
+  }
+  if (gated === 0) {
+    failures.push({ question: "(all)", condition: "empty", detail: "no question has facts, so there is nothing to gate" });
+  }
+  return { pass: failures.length === 0, gated, failures, notGated };
+}
+
+export function formatGate(v: GateVerdict): string {
+  const out: string[] = [];
+  if (v.pass) {
+    out.push(`GATE PASS (G5): all ${v.gated} gated questions are cheaper than reading their files and have every fact`);
+  } else if (v.gated === 0) {
+    out.push("GATE FAIL (G5): nothing to gate (no question has facts)");
+  } else {
+    const failing = new Set(v.failures.map((f) => f.question));
+    out.push(`GATE FAIL (G5): ${failing.size} of ${v.gated} questions fail`);
+    const width = Math.max(...v.failures.map((f) => f.question.length));
+    for (const f of v.failures) {
+      const what = f.condition === "tokens" ? "tokens: " : f.condition === "fact" ? "fact missing: " : "";
+      out.push(`  ${f.question.padEnd(width)}  ${what}${f.detail}`);
+    }
+  }
+  if (v.notGated.length) out.push(`not gated (no facts): ${v.notGated.join(", ")}`);
   return `${out.join("\n")}\n`;
 }

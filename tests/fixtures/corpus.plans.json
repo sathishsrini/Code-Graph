@@ -1,0 +1,59 @@
+{
+  "//": "code-intel tool plans for corpus.golden.json (CTX-S2), read by scripts/workflow-bench.ts --corpus. Same shape as orders_app.plans.json, keyed by question id. Each step is what an agent would call to answer the question, and `from` says which part of the question it serves. There are no `services`: corpus mode takes the repos from config/repos.json and queries the graph already built from them.",
+  "//requires": "A step marked `requires: CTX-Sn` names a tool that slice adds. The bench runs it only when the server lists that tool, and otherwise prints it as skipped; tests/workflow-bench.test.ts accepts a tool not in src/mcp/server.ts only with this mark. error_trace's arguments follow the CTX-S13 worktree's inputSchema (service, method, path); find_workflow's argument name is not fixed yet and CTX-S8 corrects it. The slice that adds a tool also removes the stand-in steps its tool replaces, in the same commit, so the bench delta is attributable to it.",
+  "//args": "No argument contains a fact's evidence (tests/workflow-bench.test.ts checks this): a response that echoes its request, such as a not-found message, would otherwise credit the fact. That is why po_endpoint_flow asks endpoint_flow alone and does not seed context_pack with proxyToEngine, one of its facts.",
+
+  "not_indexed": [
+    { "path": "procurement-module", "reason": "PROCUREMENT_BASE_URL's target (Q1.5) is not in config/repos.json; the graph cannot follow that branch, and only traces can tell which branch is live (plan §4.2)" }
+  ],
+
+  "plans": {
+    "po_endpoint_flow": {
+      "steps": [
+        { "tool": "endpoint_flow", "args": { "service": "40-kri-router", "method": "POST", "path": "/api/v1/po" },
+          "from": "Q1: hooks, auth, call tree and cross-service calls of the endpoint, following remote calls" }
+      ],
+      "unmapped": []
+    },
+    "send_mail_feature": {
+      "steps": [
+        { "tool": "security_path", "args": {},
+          "from": "stand-in until find_workflow: no MCP tool takes a phrase today, so the agent lists every route and picks the mail one" },
+        { "tool": "find_workflow", "args": { "phrase": "send mail" }, "requires": "CTX-S8",
+          "from": "phrase -> candidate routes -> endpoint_flow of the chosen one (plan CTX-S8)" }
+      ],
+      "unmapped": []
+    },
+    "check_user_auth_edit": {
+      "steps": [
+        { "tool": "context_pack", "args": { "symbol": "checkUserAuth" },
+          "from": "Q3: definition, source, callers and the checks around it" },
+        { "tool": "impact", "args": { "symbol": "checkUserAuth" },
+          "from": "Q3: callers and every route the change reaches" }
+      ],
+      "unmapped": []
+    },
+    "po_error_statuses": {
+      "steps": [
+        { "tool": "endpoint_flow", "args": { "service": "40-kri-router", "method": "POST", "path": "/api/v1/po" },
+          "from": "Q2: which functions run, router and downstream" },
+        { "tool": "context_pack", "args": { "symbol": "proxyToEngine" },
+          "from": "Q2: the router handler's catch (502/504) and the pass-through" },
+        { "tool": "context_pack", "args": { "symbol": "checkUserAuth" },
+          "from": "Q2: the router's 401" },
+        { "tool": "context_pack", "args": { "symbol": "serviceAuth" },
+          "from": "Q2: the engine's 401" },
+        { "tool": "error_trace", "args": { "service": "40-kri-router", "method": "POST", "path": "/api/v1/po" }, "requires": "CTX-S13",
+          "from": "Q2: static failure surface of the endpoint, including the engine's anonymous handler (409/422/500)" }
+      ],
+      "unmapped": []
+    },
+    "po_tables": {
+      "steps": [
+        { "tool": "endpoint_flow", "args": { "service": "40-kri-router", "method": "POST", "path": "/api/v1/po" },
+          "from": "API -> tables: the READS/WRITES rows of the flow, across services" }
+      ],
+      "unmapped": []
+    }
+  }
+}

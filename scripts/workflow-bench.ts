@@ -22,12 +22,29 @@
 // question answered badly because an indexer did not run is a different fact
 // from one answered badly by the query layer.
 //
-//   node scripts/workflow-bench.ts [--golden PATH] [--plans PATH] [--json OUT] [--keep] [-v]
+// CTX-S2 (goal G5) adds a corpus mode and a gate:
+//
+//   --corpus   Query the graph already built from the real config/repos.json
+//              (`--db`, default .codeintel/graph.db) instead of copying a
+//              fixture and re-indexing. Nothing is written. "Reading the
+//              files" is the golden's line ranges read from the corpus files
+//              on disk, each resolved through its repo's rootPath.
+//   --gate     Exit 1 when, for any question, graph + still-to-read is not
+//              below reading the files, or a required fact is missing. The
+//              verdict is `gate()` in the scoring module; each failing
+//              question is printed with the condition it failed.
+//
+// A plan step marked `requires: CTX-Sn` names a tool that slice adds; it runs
+// when the server lists the tool and is otherwise printed as skipped.
+//
+//   node scripts/workflow-bench.ts [--golden PATH] [--plans PATH] [--json OUT] [--keep] [--gate] [-v]
+//   node scripts/workflow-bench.ts --corpus [--db PATH] [--config PATH] [--golden PATH] [--plans PATH]
+//                                  [--json OUT] [--gate] [-v]
 // ============================================================================
 
 import { spawnSync } from "node:child_process";
 import {
-  cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync,
+  cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -36,15 +53,18 @@ import { parseArgs } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import {
-  edgeKey, edgesIn, formatReport, readCost, scoreQuestion, searchable, shorten,
-  utf8Bytes, workspaceVariants,
-  type Golden, type QuestionResult, type RepoRoot, type StepRecord,
+  corpusPath, edgeKey, edgesIn, formatGate, formatReport, gate, readCost, readRangesCost, scoreQuestion,
+  searchable, shorten, utf8Bytes, workspaceVariants,
+  type Golden, type GateVerdict, type LineRange, type QuestionResult, type RepoRoot, type StepRecord,
 } from "./workflow-bench-score.ts";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = join(REPO, "src", "cli.ts");
 const FIXTURES = join(REPO, "tests", "fixtures");
 const DEFAULT_GOLDEN = join(FIXTURES, "orders_app.golden.json");
+const CORPUS_GOLDEN = join(FIXTURES, "corpus.golden.json");
+/** The CLI's own default store, relative to the repo root. */
+const DEFAULT_DB = join(REPO, ".codeintel", "graph.db");
 
 interface ServiceSpec {
   name: string;
@@ -61,9 +81,12 @@ interface PlanStep {
   tool: string;
   args: Record<string, unknown>;
   from: string;
+  /** The slice that adds `tool` (CTX-S2). Absent: the tool exists today. */
+  requires?: string;
 }
 
 interface Plans {
+  /** Fixture mode only; corpus mode takes its repos from the config. */
   services: ServiceSpec[];
   not_indexed: Array<{ path: string; reason: string }>;
   plans: Record<string, { steps: PlanStep[]; unmapped: Array<{ from: string; reason: string }> }>;
@@ -76,6 +99,18 @@ interface ChannelRun {
   ms: number;
   /** Tail of the failing command's output, verbatim. Empty on success. */
   error: string;
+}
+
+/** What the question loop needs from either mode. */
+interface Workspace {
+  /** Read cost of a golden file: only `ranges` when given, else all of it. */
+  fileCost: (file: string, ranges?: readonly LineRange[]) => number;
+  /** Spellings of local paths to shorten to ${ws} in responses. */
+  variants: string[];
+  roots: RepoRoot[];
+  files: ReadonlySet<string>;
+  /** False when the golden has no edge truth (corpus): edges are not scored. */
+  scoreEdges: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -206,24 +241,202 @@ function renderAcquisition(runs: ChannelRun[], report: unknown, plans: Plans, no
 }
 
 // ---------------------------------------------------------------------------
+// Corpus mode (CTX-S2)
+// ---------------------------------------------------------------------------
+
+/**
+ * The corpus side of the comparison: the config's repos, and a read cost for
+ * every golden file on disk. Returns the problems instead when a file cannot
+ * be found or a range runs outside it — a baseline computed around a missing
+ * file would be a smaller number, not an honest one.
+ */
+function corpusWorkspace(golden: Golden, configPath: string): { ws: Workspace; repos: number } | { problems: string[] } {
+  const raw = JSON.parse(readFileSync(configPath, "utf8")) as { repos?: Array<{ name: string; rootPath: string }> };
+  const repos = raw.repos ?? [];
+  const bytes = new Map<string, Uint8Array>();
+  const problems: string[] = [];
+
+  for (const q of golden.questions) {
+    for (const f of q.facts ?? []) {
+      const path = corpusPath(f.file, repos);
+      if (!path) {
+        problems.push(`${q.id}/${f.id}: ${f.file} names no repo in ${configPath}`);
+        continue;
+      }
+      if (!bytes.has(f.file)) {
+        if (!existsSync(path)) {
+          problems.push(`${q.id}/${f.id}: ${path} not found`);
+          continue;
+        }
+        bytes.set(f.file, readFileSync(path));
+      }
+      if (f.ranges) {
+        try {
+          readRangesCost(bytes.get(f.file)!, f.ranges);
+        } catch (e) {
+          problems.push(`${q.id}/${f.id}: ${f.file}: ${(e as Error).message}`);
+        }
+      }
+    }
+  }
+  if (problems.length) return { problems };
+
+  const variants = [...new Set(repos.flatMap((r) => workspaceVariants(r.rootPath)))]
+    .sort((a, b) => b.length - a.length);
+  return {
+    repos: repos.length,
+    ws: {
+      fileCost: (file, ranges) => {
+        const data = bytes.get(file);
+        if (!data) throw new Error(`no corpus bytes for ${file}`);
+        return ranges ? readRangesCost(data, ranges) : readCost(data);
+      },
+      variants,
+      roots: repos.map((r) => ({ name: r.name, root: r.name })),
+      files: new Set(bytes.keys()),
+      scoreEdges: (golden.true_edges?.length ?? 0) > 0,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Shared: drive the MCP server, score, report, gate
+// ---------------------------------------------------------------------------
+
+async function connect(db: string, cwd: string, log: (chunk: string) => void): Promise<Client> {
+  const transport = new StdioClientTransport({
+    command: process.execPath, args: [CLI, "mcp", "--db", db], cwd, stderr: "pipe",
+  });
+  transport.stderr?.on("data", (chunk: Buffer) => { log(chunk.toString("utf8")); });
+  const client = new Client({ name: "workflow-bench", version: "1" });
+  await client.connect(transport);
+  return client;
+}
+
+async function runQuestions(
+  client: Client, golden: Golden, plans: Plans, plansPath: string, ws: Workspace, verbose: boolean,
+): Promise<{ results: QuestionResult[]; schemaBytes: number; skipped: string[] }> {
+  // Compact JSON, UTF-8. The Python original's json.dumps escaped non-ASCII
+  // (an em dash cost 6 bytes); UTF-8 is what actually crosses the wire.
+  const schema = await client.listTools();
+  const schemaBytes = utf8Bytes(JSON.stringify(schema));
+  const available = new Set(schema.tools.map((t) => t.name));
+  const trueEdges = new Set((golden.true_edges ?? []).map(([a, b]) => edgeKey([a, b])));
+
+  const results: QuestionResult[] = [];
+  const skipped: string[] = [];
+  for (const question of golden.questions) {
+    const plan = plans.plans[question.id];
+    if (!plan) throw new Error(`no plan for question "${question.id}" in ${plansPath}`);
+    if (verbose) process.stdout.write(`  ${question.id}\n`);
+
+    const steps: StepRecord[] = [];
+    const texts: string[] = [];
+    const returned = new Set<string>();
+    for (const step of plan.steps) {
+      // A tool a later slice adds: run it once the server has it, never fake it.
+      if (step.requires && !available.has(step.tool)) {
+        skipped.push(`${question.id}: ${step.tool} -- requires ${step.requires}, not on this server yet`);
+        continue;
+      }
+      const started = Date.now();
+      let text: string;
+      let isError: boolean;
+      try {
+        const r = await client.callTool({ name: step.tool, arguments: step.args }, undefined, { timeout: 180_000 });
+        const content = (r.content ?? []) as Array<{ type: string; text?: string }>;
+        text = content.map((part) => part.text ?? "").join("\n");
+        isError = r.isError === true;
+      } catch (e) {
+        text = `Error: ${(e as Error).message}`;
+        isError = true;
+      }
+      const short = shorten(text, ws.variants);
+      texts.push(searchable(text));
+      if (ws.scoreEdges) {
+        for (const edge of edgesIn(step.tool, text, ws.roots, ws.files)) returned.add(edgeKey(edge));
+      }
+      const a = step.args;
+      steps.push({
+        tool: step.tool,
+        target: typeof a["symbol"] === "string" ? a["symbol"]
+          : typeof a["path"] === "string" ? `${String(a["method"])} ${a["path"]}`
+          : typeof a["phrase"] === "string" ? a["phrase"] : "",
+        bytes: utf8Bytes(short),
+        raw_bytes: utf8Bytes(text),
+        error: isError,
+        ms: Date.now() - started,
+      });
+      if (verbose) {
+        const s = steps[steps.length - 1]!;
+        process.stdout.write(
+          `    ${s.tool.padEnd(22)} ${s.target.padEnd(42)} ${String(s.bytes).padStart(7)} B${s.error ? "  ERROR" : ""}\n`,
+        );
+      }
+    }
+    results.push(scoreQuestion({ question, steps, texts, returned, trueEdges, fileCost: ws.fileCost }));
+  }
+  return { results, schemaBytes, skipped };
+}
+
+/** Print the report, and the gate when asked. Returns the exit code. */
+function finish(
+  golden: Golden, plans: Plans, run: Awaited<ReturnType<typeof runQuestions>>,
+  opts: { gate: boolean; json: string | undefined; extra: Record<string, unknown> },
+): number {
+  const server = `node src/cli.ts mcp (code-intel ${readVersion()})`;
+  process.stdout.write(formatReport(run.results, run.schemaBytes, server));
+  for (const q of golden.questions) {
+    for (const u of plans.plans[q.id]?.unmapped ?? []) {
+      process.stdout.write(`unmapped in ${q.id}: ${u.from} -- ${u.reason}\n`);
+    }
+  }
+  for (const s of run.skipped) process.stdout.write(`skipped in ${s}\n`);
+
+  let verdict: GateVerdict | null = null;
+  if (opts.gate) {
+    verdict = gate(run.results);
+    process.stdout.write(`\n${formatGate(verdict)}`);
+  }
+
+  if (opts.json) {
+    writeFileSync(resolve(opts.json), `${JSON.stringify({
+      server, schema_bytes: run.schemaBytes, ...opts.extra, skipped: run.skipped,
+      questions: run.results, ...(verdict ? { gate: verdict } : {}),
+    }, null, 2)}\n`, "utf8");
+  }
+  return verdict && !verdict.pass ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
 
 async function main(): Promise<number> {
   const { values } = parseArgs({
     options: {
-      golden: { type: "string", default: DEFAULT_GOLDEN },
+      golden: { type: "string" },
       plans: { type: "string" },
       json: { type: "string" },
       keep: { type: "boolean", default: false },
+      corpus: { type: "boolean", default: false },
+      db: { type: "string" },
+      config: { type: "string" },
+      gate: { type: "boolean", default: false },
       verbose: { type: "boolean", short: "v", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
   });
   if (values.help) {
-    process.stdout.write("node scripts/workflow-bench.ts [--golden PATH] [--plans PATH] [--json OUT] [--keep] [-v]\n");
+    process.stdout.write(
+      "node scripts/workflow-bench.ts [--golden PATH] [--plans PATH] [--json OUT] [--keep] [--gate] [-v]\n" +
+      "node scripts/workflow-bench.ts --corpus [--db PATH] [--config PATH] [--golden PATH] [--plans PATH] [--json OUT] [--gate] [-v]\n" +
+      "  --corpus  query the existing graph built from the real config (no re-index); default golden\n" +
+      "            tests/fixtures/corpus.golden.json, default db .codeintel/graph.db\n" +
+      "  --gate    exit 1 unless every question costs less than reading its files and has every fact\n",
+    );
     return 0;
   }
 
-  const goldenPath = resolve(values.golden);
+  const goldenPath = resolve(values.golden ?? (values.corpus ? CORPUS_GOLDEN : DEFAULT_GOLDEN));
   const plansPath = resolve(values.plans ?? goldenPath.replace(/\.golden\.json$/, ".plans.json"));
   for (const p of [goldenPath, plansPath]) {
     if (!existsSync(p)) {
@@ -232,8 +445,28 @@ async function main(): Promise<number> {
     }
   }
   const golden = JSON.parse(readFileSync(goldenPath, "utf8")) as Golden;
-  const plans = JSON.parse(readFileSync(plansPath, "utf8")) as Plans;
-  const fixture = join(dirname(goldenPath), golden.fixture);
+  const rawPlans = JSON.parse(readFileSync(plansPath, "utf8")) as Partial<Plans>;
+  const plans: Plans = {
+    services: rawPlans.services ?? [],
+    not_indexed: rawPlans.not_indexed ?? [],
+    plans: rawPlans.plans ?? {},
+  };
+  const opts = { gate: values.gate, json: values.json, verbose: values.verbose };
+  return values.corpus
+    ? runCorpus(golden, plans, plansPath, { ...opts, db: values.db, config: values.config })
+    : runFixture(golden, plans, plansPath, { ...opts, keep: values.keep });
+}
+
+async function runFixture(
+  golden: Golden, plans: Plans, plansPath: string,
+  opts: { gate: boolean; json: string | undefined; verbose: boolean; keep: boolean },
+): Promise<number> {
+  if (!golden.fixture || plans.services.length === 0) {
+    process.stderr.write("fixture mode needs a golden with `fixture` and a plans file with `services` (or pass --corpus)\n");
+    return 1;
+  }
+  // The golden documents `fixture` as relative to the repo root.
+  const fixture = resolve(REPO, golden.fixture);
 
   const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), "code-intel-bench-")));
   const workspace = join(scratch, "ws");
@@ -241,101 +474,79 @@ async function main(): Promise<number> {
   const notes = ensurePackageJson(workspace, plans);
   writeConfig(scratch, workspace, plans);
 
-  const files = new Set(listFiles(fixture));
-  const roots: RepoRoot[] = plans.services.map((s) => ({ name: s.name, root: s.root }));
-  const trueEdges = new Set(golden.true_edges.map(([a, b]) => edgeKey([a, b])));
-  const variants = workspaceVariants(workspace);
-  const fileCost = (f: string): number => readCost(readFileSync(join(workspace, f)));
+  const ws: Workspace = {
+    fileCost: (f) => readCost(readFileSync(join(workspace, f))),
+    variants: workspaceVariants(workspace),
+    roots: plans.services.map((s) => ({ name: s.name, root: s.root })),
+    files: new Set(listFiles(fixture)),
+    scoreEdges: true,
+  };
 
   let client: Client | null = null;
   let serverLog = "";
   try {
-    const { runs, db, report } = acquire(scratch, plans, values.verbose);
+    const { runs, db, report } = acquire(scratch, plans, opts.verbose);
     process.stdout.write(`\n${renderAcquisition(runs, report, plans, notes)}`);
     if (!existsSync(db)) {
       process.stderr.write("\nno store was written; nothing to query\n");
       return 1;
     }
-
-    const transport = new StdioClientTransport({
-      command: process.execPath, args: [CLI, "mcp", "--db", db], cwd: scratch, stderr: "pipe",
+    client = await connect(db, scratch, (chunk) => { serverLog += chunk; });
+    const run = await runQuestions(client, golden, plans, plansPath, ws, opts.verbose);
+    return finish(golden, plans, run, {
+      gate: opts.gate, json: opts.json, extra: { mode: "fixture", notes, acquisition: runs, index: report },
     });
-    transport.stderr?.on("data", (chunk: Buffer) => { serverLog += chunk.toString("utf8"); });
-    client = new Client({ name: "workflow-bench", version: "1" });
-    await client.connect(transport);
-
-    // Compact JSON, UTF-8. The Python original's json.dumps escaped non-ASCII
-    // (an em dash cost 6 bytes); UTF-8 is what actually crosses the wire.
-    const schema = await client.listTools();
-    const schemaBytes = utf8Bytes(JSON.stringify(schema));
-
-    const results: QuestionResult[] = [];
-    for (const question of golden.questions) {
-      const plan = plans.plans[question.id];
-      if (!plan) throw new Error(`no plan for question "${question.id}" in ${plansPath}`);
-      if (values.verbose) process.stdout.write(`  ${question.id}\n`);
-
-      const steps: StepRecord[] = [];
-      const texts: string[] = [];
-      const returned = new Set<string>();
-      for (const step of plan.steps) {
-        const started = Date.now();
-        let text: string;
-        let isError: boolean;
-        try {
-          const r = await client.callTool({ name: step.tool, arguments: step.args }, undefined, { timeout: 180_000 });
-          const content = (r.content ?? []) as Array<{ type: string; text?: string }>;
-          text = content.map((part) => part.text ?? "").join("\n");
-          isError = r.isError === true;
-        } catch (e) {
-          text = `Error: ${(e as Error).message}`;
-          isError = true;
-        }
-        const short = shorten(text, variants);
-        texts.push(searchable(text));
-        for (const edge of edgesIn(step.tool, text, roots, files)) returned.add(edgeKey(edge));
-        const a = step.args;
-        steps.push({
-          tool: step.tool,
-          target: typeof a["symbol"] === "string" ? a["symbol"]
-            : typeof a["path"] === "string" ? `${String(a["method"])} ${a["path"]}` : "",
-          bytes: utf8Bytes(short),
-          raw_bytes: utf8Bytes(text),
-          error: isError,
-          ms: Date.now() - started,
-        });
-        if (values.verbose) {
-          const s = steps[steps.length - 1]!;
-          process.stdout.write(
-            `    ${s.tool.padEnd(22)} ${s.target.padEnd(42)} ${String(s.bytes).padStart(7)} B${s.error ? "  ERROR" : ""}\n`,
-          );
-        }
-      }
-      results.push(scoreQuestion({ question, steps, texts, returned, trueEdges, fileCost }));
-    }
-
-    const server = `node src/cli.ts mcp (code-intel ${readVersion()})`;
-    process.stdout.write(formatReport(results, schemaBytes, server));
-    for (const q of golden.questions) {
-      for (const u of plans.plans[q.id]?.unmapped ?? []) {
-        process.stdout.write(`unmapped in ${q.id}: ${u.from} -- ${u.reason}\n`);
-      }
-    }
-
-    if (values.json) {
-      writeFileSync(resolve(values.json), `${JSON.stringify({
-        server, schema_bytes: schemaBytes, notes, acquisition: runs, index: report, questions: results,
-      }, null, 2)}\n`, "utf8");
-    }
-    return 0;
   } finally {
     if (client) await client.close().catch(() => undefined);
-    if (values.keep) {
+    if (opts.keep) {
       writeFileSync(join(scratch, "server.log"), serverLog, "utf8");
       process.stdout.write(`kept: ${scratch}\n`);
     } else {
       rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
+  }
+}
+
+async function runCorpus(
+  golden: Golden, plans: Plans, plansPath: string,
+  opts: { gate: boolean; json: string | undefined; verbose: boolean; db: string | undefined; config: string | undefined },
+): Promise<number> {
+  const db = opts.db ? resolve(opts.db) : DEFAULT_DB;
+  const configPath = opts.config ? resolve(opts.config) : resolve(REPO, golden.corpus ?? "config/repos.json");
+  if (!existsSync(configPath)) {
+    process.stderr.write(`not found: ${configPath}\n`);
+    return 1;
+  }
+  if (!existsSync(db)) {
+    process.stderr.write(
+      `no graph at ${db}\ncorpus mode queries an existing graph and never re-indexes: build it first ` +
+      `(scip index, boot dump, index for every repo in ${configPath}), or pass --db\n`,
+    );
+    return 1;
+  }
+  const corpus = corpusWorkspace(golden, configPath);
+  if ("problems" in corpus) {
+    process.stderr.write(`cannot compute "reading the files" from the corpus:\n${corpus.problems.map((p) => `  ${p}`).join("\n")}\n`);
+    return 1;
+  }
+
+  const header = [
+    "corpus (existing graph, not re-indexed):",
+    `  db      ${db}  (modified ${statSync(db).mtime.toISOString()})`,
+    `  config  ${configPath}  (${corpus.repos} repos)`,
+    ...plans.not_indexed.map((n) => `  not indexed: ${n.path} -- ${n.reason}`),
+  ];
+  process.stdout.write(`\n${header.join("\n")}\n`);
+
+  let client: Client | null = null;
+  try {
+    client = await connect(db, REPO, () => undefined);
+    const run = await runQuestions(client, golden, plans, plansPath, corpus.ws, opts.verbose);
+    return finish(golden, plans, run, {
+      gate: opts.gate, json: opts.json, extra: { mode: "corpus", db, config: configPath },
+    });
+  } finally {
+    if (client) await client.close().catch(() => undefined);
   }
 }
 
