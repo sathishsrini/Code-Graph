@@ -32,10 +32,19 @@ SQLite store, derivations, query engine and context packer are the only custom p
 `node:sqlite` (built in, no native compilation) · SCIP (`scip-typescript`,
 `scip-python`) · tree-sitter · Semgrep · OpenTelemetry · React Flow + elkjs
 
-**Status**: Phase 0 in progress. Nothing is implemented beyond scaffolding.
-Plan of record: `plans/code-intelligence-engine-plan-v2.md` (78 requirements,
-44 tasks, 4 phases). Research verdict it implements:
-`docs/code-intelligence-engine.md`.
+**Current goal**: [`goal.md`](goal.md) — make the graph the place Claude gets its
+context from (MCP, fewer tokens), trace API errors to their cause, and cover the
+database and model layers. Plan: [`plans/claude-context-plan.md`](plans/claude-context-plan.md)
+(slices `CTX-S1`…).
+
+**Status** (2026-09-27): plan v2 Phases 0–2 are done, with two stated
+exceptions: P1-T3 (`scip-python`) is wired but blocked upstream, and Phase 2's
+criterion 4 (a `REQUESTS` edge promoted to `observed`) was not demonstrated.
+In Phase 3, P3-T1, P3-T2 and P3-T3 are done; P3-T4 and P3-T5 have not started.
+526 tests pass. What
+shipped, task by task: `implementation/RECORD.md`. Plan of record for that work:
+`plans/code-intelligence-engine-plan-v2.md` (78 requirements, 44 tasks, 4 phases).
+Research verdict it implements: `docs/code-intelligence-engine.md`.
 
 ---
 
