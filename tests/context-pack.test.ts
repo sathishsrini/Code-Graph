@@ -2,12 +2,14 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FactStore } from "../src/store/db.ts";
 import { encodeToon, estimateTokens } from "../src/serializers/toon.ts";
-import { contextPack, packToToon, TIERS } from "../src/query/context-pack.ts";
+import {
+  contextPack, packToToon, TIERS, measureReadRanges,
+} from "../src/query/context-pack.ts";
 
 let dir: string;
 before(() => { dir = mkdtempSync(join(tmpdir(), "code-intel-pack-")); });
@@ -253,6 +255,150 @@ describe("output", () => {
       const text = packToToon(contextPack(store, "seed", { includeSource: false }));
       assert.ok(text.includes("seed: seed"));
       assert.ok(text.includes("callees[1]{name,detail,where}:"));
+    } finally { store.close(); }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CTX-S7: read ranges. Claude Code's edit tool needs a prior Read of the file,
+// and Read takes offset/limit, so the pack hands over exact line ranges for
+// the seed and its direct callees and callers, straight from `symbols`.
+// ---------------------------------------------------------------------------
+
+describe("read ranges (CTX-S7)", () => {
+  /** A symbol with an explicit stored range; `end: null` stores no end line. */
+  function ranged(
+    c: Ctx, name: string, start: number, end: number | null, symbolKind = "method",
+  ): number {
+    const id = c.store.upsertNode("symbol", `scip npm svc 1 \`server.js\`/${name}().`, c.repoId);
+    c.store.upsertSymbol({
+      nodeId: id, fileId: c.fileId, displayName: name, symbolKind,
+      signature: `function ${name}()`, startLine: start, endLine: end ?? undefined,
+    });
+    return id;
+  }
+  const FILE = join("/tmp/svc", "server.js");
+
+  test("the seed, a direct callee and a direct caller carry their exact stored ranges", () => {
+    const store = new FactStore(join(dir, "ranges.db"));
+    try {
+      const c = ctx(store);
+      const seed = ranged(c, "seed", 10, 18);
+      const callee = ranged(c, "callee", 40, 52);
+      const caller = ranged(c, "caller", 80, 95);
+      c.calls(seed, callee, 12);
+      c.calls(caller, seed, 85);
+
+      const pack = contextPack(store, "seed", { includeSource: false });
+      assert.deepEqual(pack.readRanges, [
+        { file: FILE, start: 10, end: 18, symbols: ["seed:seed"] },
+        { file: FILE, start: 40, end: 52, symbols: ["callee:callee"] },
+        { file: FILE, start: 80, end: 95, symbols: ["caller:caller"] },
+      ]);
+      assert.deepEqual(pack.readRangeGaps, []);
+
+      const text = packToToon(pack);
+      assert.ok(text.includes("readRanges[3]{file,start,end,symbols}:"), text);
+      assert.ok(text.includes(`${FILE},10,18,seed:seed`));
+      assert.ok(text.includes(`${FILE},80,95,caller:caller`));
+    } finally { store.close(); }
+  });
+
+  test("a symbol without an end line is a gap, never a fabricated range", () => {
+    const store = new FactStore(join(dir, "ranges-noend.db"));
+    try {
+      const c = ctx(store);
+      const seed = ranged(c, "seed", 10, 18);
+      c.calls(seed, ranged(c, "open", 40, null), 12);
+
+      const pack = contextPack(store, "seed", { includeSource: false });
+      assert.deepEqual(pack.readRanges.map((r) => r.symbols), [["seed:seed"]]);
+      assert.ok(!pack.readRanges.some((r) => r.start === 40), "no invented end for line 40");
+      assert.equal(pack.readRangeGaps.length, 1);
+      const gap = pack.readRangeGaps[0]!;
+      assert.equal(gap.symbol, "callee:open");
+      assert.equal(gap.file, FILE);
+      assert.deepEqual(gap.lines, [40], "the start line, so the reader knows where to begin");
+      assert.match(gap.reason, /no end line/);
+      assert.ok(packToToon(pack).includes("readRangeGaps[1]{symbol,file,line,reason}:"));
+    } finally { store.close(); }
+  });
+
+  test("ranges are never dropped for budget", () => {
+    const store = new FactStore(join(dir, "ranges-budget.db"));
+    try {
+      const c = ctx(store);
+      const seed = ranged(c, "seed", 10, 18);
+      for (let i = 0; i < 20; i += 1) c.calls(seed, ranged(c, `x${i}`, 100 + i * 10, 105 + i * 10), 11);
+      const pack = contextPack(store, "seed", { budget: 10, includeSource: false });
+      assert.ok(pack.droppedTiers.includes("callees"), "the tier itself was dropped");
+      assert.equal(pack.readRanges.length, 21, "its ranges were not");
+    } finally { store.close(); }
+  });
+
+  test("overlapping or touching ranges merge; a gap of one line does not", () => {
+    // Overlap is the nested-function case: reading both ranges would read the
+    // inner one twice. Across a gap, merging would read lines nobody asked for.
+    const store = new FactStore(join(dir, "ranges-merge.db"));
+    try {
+      const c = ctx(store);
+      const seed = ranged(c, "seed", 10, 30);
+      c.calls(seed, ranged(c, "inner", 12, 20), 25);
+      c.calls(ranged(c, "next", 31, 35), seed, 33);
+      c.calls(ranged(c, "apart", 37, 40), seed, 38);
+
+      const pack = contextPack(store, "seed", { includeSource: false });
+      assert.deepEqual(pack.readRanges, [
+        { file: FILE, start: 10, end: 35, symbols: ["seed:seed", "callee:inner", "caller:next"] },
+        { file: FILE, start: 37, end: 40, symbols: ["caller:apart"] },
+      ]);
+    } finally { store.close(); }
+  });
+
+  test("a module-scope caller is a gap at its call lines, not a whole-file range", () => {
+    // SCIP credits a call inside an anonymous handler to the module, whose
+    // stored range is the whole file. Handing that over as a "range" would be
+    // the whole-file read this slice exists to avoid.
+    const store = new FactStore(join(dir, "ranges-module.db"));
+    try {
+      const c = ctx(store);
+      const seed = ranged(c, "seed", 10, 18);
+      const mod = store.upsertNode("symbol", "scip npm svc 1 `server.js`/", c.repoId);
+      store.upsertSymbol({
+        nodeId: mod, fileId: c.fileId, displayName: "server.js", symbolKind: "namespace",
+        startLine: 1, endLine: 400,
+      });
+      c.calls(mod, seed, 292);
+      c.calls(mod, seed, 310);
+
+      const pack = contextPack(store, "seed", { includeSource: false });
+      assert.deepEqual(pack.readRanges.map((r) => [r.start, r.end]), [[10, 18]]);
+      assert.equal(pack.readRangeGaps.length, 1);
+      assert.deepEqual(pack.readRangeGaps[0]!.lines, [292, 310], "the call sites");
+      assert.match(pack.readRangeGaps[0]!.reason, /module scope/);
+      assert.ok(packToToon(pack).includes(`caller:server.js,${FILE},292|310,`));
+    } finally { store.close(); }
+  });
+
+  test("Read(ranges) is measured against Read(whole files), gutter included", () => {
+    // Real bytes on disk, reached through a `repoRoots` override as tier 1 is.
+    const store = new FactStore(join(dir, "ranges-measure.db"));
+    const root = join(dir, "measure-root");
+    try {
+      mkdirSync(root, { recursive: true });
+      const lines = Array.from({ length: 20 }, (_, i) => `l${String(i + 1).padStart(2, "0")}`);
+      writeFileSync(join(root, "server.js"), lines.join("\n") + "\n");
+      const c = ctx(store);
+      ranged(c, "seed", 3, 5);
+
+      const pack = contextPack(store, "seed", {
+        includeSource: false, repoRoots: new Map([["svc", root]]),
+      });
+      assert.equal(pack.readRanges[0]!.file, join(root, "server.js"));
+      const m = measureReadRanges(pack);
+      assert.equal(m.rangeBytes, 3 * (3 + 1 + 7), "three lines, newline and gutter each");
+      assert.equal(m.fileBytes, 80 + 20 * 7, "the whole file, same accounting");
+      assert.deepEqual([m.ranges, m.files, m.gaps], [1, 1, 0]);
     } finally { store.close(); }
   });
 });

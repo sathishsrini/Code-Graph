@@ -204,3 +204,26 @@ describe("gaps reach the model", () => {
     } finally { store.close(); }
   });
 });
+
+describe("context_pack hands Claude read ranges (CTX-S7)", () => {
+  test("the description tells Claude to Read the ranges with offset/limit", () => {
+    const d = TOOLS.find((t) => t.name === "context_pack")!.description;
+    assert.ok(d.includes("readRanges"), "names the section");
+    assert.ok(d.includes("offset") && d.includes("limit"), "names the Read arguments");
+  });
+
+  test("the output carries the ranges", () => {
+    const store = seeded("ranges.db");
+    try {
+      const out = callTool(store, "context_pack", { symbol: "handler", includeSource: false });
+      assert.ok(out.includes("readRanges[1]{file,start,end,symbols}:"), out);
+      assert.ok(out.includes(`${join("/tmp/svc", "server.js")},10,20,seed:handler|callee:helper`));
+    } finally { store.close(); }
+  });
+
+  test("the whole tool list stays under 2,000 tokens", () => {
+    // Tool descriptions are what ToolSearch matches on and every session pays
+    // for them. bytes / 4, the convention of scripts/workflow-bench-score.ts.
+    assert.ok(JSON.stringify(TOOLS).length / 4 < 2000);
+  });
+});

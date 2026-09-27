@@ -28,7 +28,9 @@ import { impact, SeedNotFound, type ImpactReport } from "./query/impact.ts";
 import { renderImpact } from "./query/impact-render.ts";
 import { securityPath } from "./query/security.ts";
 import { renderSecurity, renderRouteSecurity } from "./query/security-render.ts";
-import { contextPack, packToToon, measureTokenDelta } from "./query/context-pack.ts";
+import {
+  contextPack, packToToon, measureTokenDelta, measureReadRanges,
+} from "./query/context-pack.ts";
 import { startMcpServer } from "./mcp/server.ts";
 import { flowToMermaid } from "./serializers/mermaid.ts";
 import { startReceiver } from "./runtime/receiver.ts";
@@ -106,6 +108,7 @@ OPTIONS
   --budget <n>        context: token budget                      (default 4000)
   --no-source         context: omit tier-1 raw source
   --measure           context: also report the R71 token delta vs dumping files
+                      and Read(readRanges) vs Read(whole files) (CTX-S7)
   --port <n>          otlp serve: listen port                    (default 4318)
   --sample-rate <r>   otlp serve: fraction of non-errored traces kept (default 0.01)
   --dead-after <d>    promote: days without confirmation before "possibly dead"
@@ -928,7 +931,7 @@ function cmdContext(options: Options, seed: string): number {
 
     if (options.json) {
       const body = options.measure
-        ? { ...pack, delta: measureTokenDelta(store, pack) }
+        ? { ...pack, delta: measureTokenDelta(store, pack), reads: measureReadRanges(pack) }
         : pack;
       process.stdout.write(JSON.stringify(body, null, 2) + BREAK);
       return 0;
@@ -943,6 +946,15 @@ function cmdContext(options: Options, seed: string): number {
         `  pack        : ${d.packTokens} tokens` + BREAK +
         `  file dump   : ${d.dumpTokens} tokens across ${d.files} file(s)` + BREAK +
         `  ratio       : ${(d.ratio * 100).toFixed(1)}% of dumping the files` + BREAK,
+      );
+      // CTX-S7: what the read ranges save over Reading their files whole.
+      const r = measureReadRanges(pack);
+      process.stdout.write(
+        BREAK +
+        "CTX-S7 READ RANGES" + BREAK +
+        `  Read(ranges): ${r.rangeTokens} tokens (${r.rangeBytes} bytes, ${r.ranges} range(s))` + BREAK +
+        `  Read(files) : ${r.fileTokens} tokens (${r.fileBytes} bytes, ${r.files} file(s))` + BREAK +
+        `  range gaps  : ${r.gaps} (in neither figure)` + BREAK,
       );
     }
     return 0;

@@ -64,6 +64,32 @@ export interface ContextPack {
   includedTiers: Tier[];
   /** Tiers dropped for budget. Named, so the reader knows what is missing. */
   droppedTiers: Tier[];
+  /** CTX-S7: exact line ranges to Read before editing. Never dropped for budget. */
+  readRanges: ReadRange[];
+  /** CTX-S7: seed, callees or callers with no usable stored range, and why. */
+  readRangeGaps: ReadRangeGap[];
+}
+
+/** CTX-S7: one Read call's worth of lines. */
+export interface ReadRange {
+  /** Absolute: the repo's `root_path` joined to `files.path`. Read takes absolute paths. */
+  file: string;
+  /** 1-based and inclusive, verbatim from `symbols.start_line` / `end_line`. */
+  start: number;
+  end: number;
+  /** `role:name` per symbol covered. More than one only where ranges overlapped or touched. */
+  symbols: string[];
+}
+
+/** CTX-S7: a symbol the pack cannot hand over as a range. Never filled with a guess. */
+export interface ReadRangeGap {
+  /** `role:name`, as in `ReadRange.symbols`. */
+  symbol: string;
+  /** Absolute path, or "" when no file is stored. */
+  file: string;
+  /** The start line; for a module-scope caller, its call sites; empty when unknown. */
+  lines: number[];
+  reason: string;
 }
 
 export interface PackOptions {
@@ -145,6 +171,9 @@ export function contextPack(
   items.push(...gaps);
   included.push("gaps");
 
+  // CTX-S7: computed outside the tier walk, so no budget can drop them.
+  const reads = readRangesFor(store, seed.nodeId, options.repoRoots);
+
   return {
     seed: { name: seed.display, key: seed.key, file: seed.file, signature },
     source,
@@ -153,6 +182,8 @@ export function contextPack(
     usedTokens: used,
     includedTiers: included,
     droppedTiers: dropped,
+    readRanges: reads.ranges,
+    readRangeGaps: reads.gaps,
   };
 }
 
@@ -320,6 +351,115 @@ function readSeedSource(
 }
 
 // ---------------------------------------------------------------------------
+// Read ranges  —  slice CTX-S7
+// ---------------------------------------------------------------------------
+// Claude Code's edit tool refuses a file that was not Read first, and Read
+// takes offset/limit. With start lines only, the reader Read whole files to
+// find where each function ends. These are the exact `symbols` ranges for the
+// seed and its direct CALLS neighbours, both directions.
+//
+// Decisions, each a place where a range could quietly mislead:
+//
+// - **Outside the budget.** A few tokens a row, and the point of the pack; a
+//   budget that dropped them would send the reader back to whole files.
+// - **Absolute paths**, `repos.root_path` + `files.path`, because that is what
+//   Read takes. `repoRoots` overrides a root, as it does for tier 1.
+// - **Merged only when they overlap or touch** in one file: a function nested
+//   in its caller, or adjacent definitions. That removes duplicate lines for
+//   free. Across even a one-line gap they stay apart, since merging there
+//   reads lines nobody asked for to save one call.
+// - **No end line, no range.** The symbol becomes a gap carrying its start
+//   line. An end is never invented.
+// - **A module-scope neighbour is a gap at its call lines.** SCIP credits a
+//   call inside an anonymous handler to the module, whose stored range is the
+//   whole file, which is the read this slice exists to avoid.
+// - **CALLS_EXTERNAL targets are left out.** They live outside the indexed
+//   repos, so no range is expected and none is missing.
+// ---------------------------------------------------------------------------
+
+interface RangeRow {
+  id: number; kind: string; key: string; symbol_kind: string | null;
+  start_line: number | null; end_line: number | null;
+  path: string | null; repo: string | null; root_path: string | null;
+  call_line: number | null;
+}
+
+function readRangesFor(
+  store: FactStore, seedId: number, roots?: Map<string, string>,
+): { ranges: ReadRange[]; gaps: ReadRangeGap[] } {
+  const db = store.raw();
+  const cols = `n.id, n.kind, n.key, s.symbol_kind, s.start_line, s.end_line,
+                f.path, r.name AS repo, r.root_path`;
+  const joins = `LEFT JOIN symbols s ON s.node_id = n.id
+                 LEFT JOIN files f ON f.id = s.file_id
+                 LEFT JOIN repos r ON r.id = f.repo_id`;
+
+  const rows: Array<[string, RangeRow]> = [];
+  const seedRow = db.prepare(
+    `SELECT ${cols}, NULL AS call_line FROM nodes n ${joins} WHERE n.id = ?`,
+  ).get(seedId) as RangeRow | undefined;
+  if (seedRow) rows.push(["seed", seedRow]);
+  for (const [role, self, other] of [
+    ["callee", "src_node_id", "dst_node_id"],
+    ["caller", "dst_node_id", "src_node_id"],
+  ] as const) {
+    const found = db.prepare(
+      `SELECT ${cols}, e.line AS call_line
+         FROM edges e JOIN nodes n ON n.id = e.${other} ${joins}
+        WHERE e.${self} = ? AND e.type = 'CALLS' AND n.id <> ?
+        ORDER BY n.key, e.line`,
+    ).all(seedId, seedId) as unknown as RangeRow[];
+    for (const row of found) rows.push([role, row]);
+  }
+
+  // One entry per role and node; a node with several call sites keeps them all.
+  const byNode = new Map<string, { role: string; row: RangeRow; calls: number[] }>();
+  for (const [role, row] of rows) {
+    const entry = byNode.get(`${role} ${row.id}`) ??
+      { role, row, calls: [] as number[] };
+    byNode.set(`${role} ${row.id}`, entry);
+    if (row.call_line !== null && !entry.calls.includes(row.call_line)) {
+      entry.calls.push(row.call_line);
+    }
+  }
+
+  const ranges: ReadRange[] = [];
+  const gaps: ReadRangeGap[] = [];
+  for (const { role, row, calls } of byNode.values()) {
+    const symbol = `${role}:${row.kind === "symbol" ? displayNameOf(row.key) : row.key}`;
+    const root = row.repo === null ? null : roots?.get(row.repo) ?? row.root_path;
+    const file = row.path === null || root === null ? "" : join(root, row.path);
+    const gap = (lines: number[], reason: string) =>
+      gaps.push({ symbol, file, lines, reason });
+
+    if (file === "" || row.start_line === null) gap([], "no stored file or start line");
+    else if (row.symbol_kind === "namespace") {
+      gap(calls.length > 0 ? calls : [row.start_line], "module scope: its stored range is the whole file");
+    } else if (row.end_line === null) gap([row.start_line], "no end line stored; the end is unknown");
+    else if (row.end_line < row.start_line) gap([row.start_line], "stored end line precedes the start");
+    else ranges.push({ file, start: row.start_line, end: row.end_line, symbols: [symbol] });
+  }
+  return { ranges: mergeRanges(ranges), gaps };
+}
+
+/** Sort by file and start; merge ranges that overlap or touch. Nothing else. */
+function mergeRanges(ranges: ReadRange[]): ReadRange[] {
+  const sorted = [...ranges].sort((a, b) =>
+    a.file === b.file ? a.start - b.start || a.end - b.end : a.file < b.file ? -1 : 1);
+  const out: ReadRange[] = [];
+  for (const r of sorted) {
+    const last = out[out.length - 1];
+    if (last && last.file === r.file && r.start <= last.end + 1) {
+      last.end = Math.max(last.end, r.end);
+      last.symbols.push(...r.symbols.filter((s) => !last.symbols.includes(s)));
+    } else {
+      out.push({ ...r, symbols: [...r.symbols] });
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // R44 output
 // ---------------------------------------------------------------------------
 
@@ -331,6 +471,16 @@ export function packToToon(pack: ContextPack): string {
     budget: pack.budget,
     used: pack.usedTokens,
   };
+  // CTX-S7: the Read plan, first after the header because it is what the
+  // reader acts on. Rendered even when empty; the gaps say why.
+  grouped["readRanges"] = pack.readRanges.map((r) => ({
+    file: r.file, start: r.start, end: r.end, symbols: r.symbols.join("|"),
+  }));
+  if (pack.readRangeGaps.length > 0) {
+    grouped["readRangeGaps"] = pack.readRangeGaps.map((g) => ({
+      symbol: g.symbol, file: g.file, line: g.lines.join("|"), reason: g.reason,
+    }));
+  }
   for (const tier of TIERS) {
     if (tier === "seed") continue;
     const items = pack.items.filter((i) => i.tier === tier);
@@ -392,5 +542,59 @@ export function measureTokenDelta(
     dumpTokens,
     files,
     ratio: dumpTokens === 0 ? 0 : packTokens / dumpTokens,
+  };
+}
+
+/**
+ * CTX-S7's measurement: Read(readRanges) against Read(the whole files they
+ * sit in), counted as the Read tool returns text: bytes, plus a 7-byte
+ * line-number gutter per line (`READ_GUTTER_BYTES`, the convention of
+ * scripts/workflow-bench-score.ts). Tokens are bytes / 4. Range gaps are in
+ * neither side and are counted, so a reader sees what the numbers leave out.
+ */
+export interface ReadRangeDelta {
+  rangeBytes: number;
+  fileBytes: number;
+  rangeTokens: number;
+  fileTokens: number;
+  ranges: number;
+  files: number;
+  gaps: number;
+}
+
+export function measureReadRanges(pack: ContextPack): ReadRangeDelta {
+  const GUTTER = 7;
+  let rangeBytes = 0;
+  let fileBytes = 0;
+  const files = new Map<string, Buffer | null>();
+  const readOnce = (file: string): Buffer | null => {
+    if (!files.has(file)) {
+      try { files.set(file, readFileSync(file)); } catch { files.set(file, null); }
+    }
+    return files.get(file) ?? null;
+  };
+
+  for (const r of pack.readRanges) {
+    const data = readOnce(r.file);
+    if (!data) continue;
+    const lines = data.toString("utf8").split("\n").slice(r.start - 1, r.end);
+    for (const line of lines) rangeBytes += Buffer.byteLength(line, "utf8") + 1 + GUTTER;
+  }
+  let readable = 0;
+  for (const data of files.values()) {
+    if (!data) continue;
+    readable += 1;
+    let newlines = 0;
+    for (const byte of data) if (byte === 0x0a) newlines += 1;
+    fileBytes += data.length + newlines * GUTTER;
+  }
+  return {
+    rangeBytes,
+    fileBytes,
+    rangeTokens: Math.round(rangeBytes / 4),
+    fileTokens: Math.round(fileBytes / 4),
+    ranges: pack.readRanges.length,
+    files: readable,
+    gaps: pack.readRangeGaps.length,
   };
 }

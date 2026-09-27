@@ -122,7 +122,10 @@ export const TOOLS = [
       "on, the security checks on those routes, config and datastores it touches, " +
       "and the gaps the engine could not resolve. " +
       "Prefer this over reading whole files — it measured 4-26% of the tokens of " +
-      "dumping the files it covers. Tiers dropped for budget are named in the " +
+      "dumping the files it covers. " +
+      // CTX-S7: Edit needs a prior Read, and Read takes offset/limit.
+      "To edit, Read only its readRanges (offset=start, limit=end-start+1), " +
+      "not whole files. Tiers dropped for budget are named in the " +
       "output; the gaps section is never dropped. " +
       `${CONFIDENCE_NOTE} ` +
       "Items marked [file-scope] were attributed to the file, not to this " +
