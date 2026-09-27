@@ -1,6 +1,6 @@
 # Goal — CodeGraph as the context source for Claude
 
-**Owner:** Sathish · **Confirmed:** 2026-09-27 · **Plan:** [`plans/claude-context-plan.md`](plans/claude-context-plan.md)
+**Owner:** Sathish · **Confirmed:** 2026-09-27 · **Plan:** [`plans/claude-context-plan.md`](plans/claude-context-plan.md) · **Status:** [`plans/claude-context-tracker.md`](plans/claude-context-tracker.md)
 
 ## The goal, as written
 

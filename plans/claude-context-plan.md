@@ -2,6 +2,7 @@
 
 **Goal:** [`goal.md`](../goal.md) (requirements G1–G13, confirmed 2026-09-27)
 **Base:** `feat/workflow-context-slices` @ `5f9b525` · **Slice IDs:** `CTX-S1` … `CTX-S17`, later `CTX-L1` … `CTX-L3`
+**Status of each slice:** [`claude-context-tracker.md`](claude-context-tracker.md)
 **Relation to earlier plans:** `plans/code-intelligence-engine-plan-v2.md` stays the
 record of how the engine was built, and is not edited. This plan builds on what v2
 shipped and does not repeat it.
