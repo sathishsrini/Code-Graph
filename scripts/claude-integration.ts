@@ -7,7 +7,16 @@
 //              the file up first), then register the MCP server at user scope
 //              through the `claude` CLI
 //   uninstall  remove exactly what install added
-//   status     report hooks, MCP registration, graph db and indexed folders
+//   status     report hooks, .env reads, MCP registration, graph db and indexed folders
+//
+// And, separately, slice CTX-F2 (A/B finding M11 #5):
+//
+//   deny-env   add Read deny rules for .env and .env.* files in any directory
+//              to permissions.deny in ~/.claude/settings.json (backup first)
+//   allow-env  remove exactly those rules
+//
+// They are their own commands so install/uninstall stay exactly as they were.
+// The rules, and why .env.example is blocked too: claude-settings.ts.
 //
 // Nothing here edits a target repo. Which folders the steering is active in is
 // decided at hook time from config/repos.json, so onboarding another service
@@ -17,7 +26,7 @@
 // and names it. Every write goes to a temp file first and is renamed into
 // place, so an interrupted install cannot leave half a JSON file behind.
 //
-//   node scripts/claude-integration.ts install|uninstall|status
+//   node scripts/claude-integration.ts install|uninstall|status|deny-env|allow-env
 //        [--settings PATH] [--config PATH] [--db PATH] [--claude-bin CMD] [--skip-mcp]
 // ============================================================================
 
@@ -29,13 +38,13 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { loadIndexedRepos } from "../src/integrations/claude-steering.ts";
 import {
-  hookCommand, installHooks, installedEvents, mcpAddArgs, mcpGetArgs, mcpRemoveArgs,
-  uninstallHooks, MCP_SERVER_NAME,
+  allowEnvReads, deniedEnvRules, denyEnvReads, hookCommand, installHooks, installedEvents,
+  mcpAddArgs, mcpGetArgs, mcpRemoveArgs, uninstallHooks, ENV_DENY_RULES, MCP_SERVER_NAME,
 } from "../src/integrations/claude-settings.ts";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const USAGE =
-  "usage: node scripts/claude-integration.ts install|uninstall|status\n" +
+  "usage: node scripts/claude-integration.ts install|uninstall|status|deny-env|allow-env\n" +
   "         [--settings PATH] [--config PATH] [--db PATH] [--claude-bin CMD] [--skip-mcp]\n";
 
 interface Options {
@@ -136,10 +145,29 @@ function uninstall(opts: Options): number {
   return 0;
 }
 
+function denyEnv(opts: Options): number {
+  const before = readSettings(opts.settings);
+  const note = writeSettings(opts.settings, before, denyEnvReads(before));
+  process.stdout.write(`env reads denied in ${opts.settings} (${note}): ${ENV_DENY_RULES.join(", ")}\n`);
+  return 0;
+}
+
+function allowEnv(opts: Options): number {
+  const before = readSettings(opts.settings);
+  const note = writeSettings(opts.settings, before, allowEnvReads(before));
+  process.stdout.write(`env reads deny rules removed from ${opts.settings} (${note})\n`);
+  return 0;
+}
+
 function status(opts: Options): number {
-  const events = installedEvents(readSettings(opts.settings));
+  const settings = readSettings(opts.settings);
+  const events = installedEvents(settings);
   const hooks = events.length === 2 ? "installed" : events.length === 0 ? "not installed" : `partial (${events.join(", ")})`;
   process.stdout.write(`hooks     ${hooks} (${opts.settings})\n`);
+  const rules = deniedEnvRules(settings);
+  const env = rules.length === ENV_DENY_RULES.length ? "denied"
+    : rules.length === 0 ? "not denied (npm run claude:deny-env)" : `partial (${rules.join(", ")})`;
+  process.stdout.write(`env reads ${env}\n`);
   process.stdout.write(`graph db  ${existsSync(opts.db) ? "present" : "missing"} (${opts.db})\n`);
   process.stdout.write(`indexed   ${describeIndexed(opts)}\n`);
   if (opts.skipMcp) {
@@ -187,6 +215,8 @@ function main(argv: string[]): number {
       case "install": return install(opts);
       case "uninstall": return uninstall(opts);
       case "status": return status(opts);
+      case "deny-env": return denyEnv(opts);
+      case "allow-env": return allowEnv(opts);
       default:
         process.stderr.write(USAGE);
         return 2;

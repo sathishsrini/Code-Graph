@@ -15,6 +15,20 @@ other MCP servers) are left out of both. Arm B adds exactly two things:
 [`ab/with-graph.mcp.json`](ab/with-graph.mcp.json) and
 [`ab/with-graph.settings.json`](ab/with-graph.settings.json).
 
+**Both arms deny `.env` reads the same way** (slice CTX-F2, after M11 #5, where plain
+Claude read a corpus `.env`). `COMMON` passes `--disallowedTools "Read(//**/.env)"
+"Read(//**/.env.*)"`. `npm run claude:deny-env` writes the same two rules to user
+settings, but `--setting-sources project,local` leaves user settings out of both arms,
+so the kit passes them itself. The rules compose with arm B's `--settings` file: per
+the [permissions docs](https://code.claude.com/docs/en/permissions), "if a tool is
+denied at any level, no other level can allow it", and `--disallowedTools` is a rule
+source of its own. The `//` anchor matches "any `.env` anywhere on the filesystem"
+(on Windows, across all drives); `Read(**/.env)` would cover only the cwd. Two limits:
+Claude Code applies Read rules to Grep and Glob as a "best-effort attempt", and the
+`.env.*` rule also blocks `.env.example`. That is accepted, because `.env.local` and
+`.env.production` hold real secrets and a `!.env.example` carve-out cannot reach a
+`//` rule (reasoning in `src/integrations/claude-settings.ts`).
+
 Isolation was checked on 2026-09-27 with a one-word prompt. Arm B showed
 `code-intel` connected, its 4 tools and the SessionStart hook; arm A showed none of
 them. Both ran `claude-sonnet-4-6`.
@@ -34,6 +48,7 @@ OUT=/d/CodeGraph/.codeintel/ab        # gitignored
 mkdir -p "$OUT"
 
 COMMON=(--model sonnet --setting-sources project,local --strict-mcp-config
+        --disallowedTools "Read(//**/.env)" "Read(//**/.env.*)"
         --output-format stream-json --verbose --include-hook-events
         --max-budget-usd 2 --no-session-persistence)
 WITH=(--settings D:/CodeGraph/docs/ab/with-graph.settings.json
@@ -68,11 +83,19 @@ node /d/CodeGraph/docs/ab/summarize.mjs "$OUT"/q*-*.jsonl
 | `usd` | Billed cost. Cache reads are cheap and cache writes expensive, so cost and tokens can disagree. Report both. |
 | `graphCalls` | `mcp__code-intel__*` calls. Must be 0 in arm A. |
 | `fileReads` | Read + Grep + Glob calls. What the graph is meant to reduce. |
-| `denied` | Tool calls refused in headless mode (e.g. Bash). Note them; they affect both arms alike. |
+| `denied` | Tool calls refused in headless mode (e.g. Bash) or by the `.env` deny rules. Note them; they affect both arms alike. |
 
 **Sanity checks before trusting a run:** each `q*-with` log must contain a
 `hook_response` line; each `q*-without` log must contain no `mcp__code-intel__`
-text at all. If either fails, the arms leaked into each other.
+text at all. If either fails, the arms leaked into each other. **Neither log may
+contain a Read of a `.env` path.** An attempt may appear only as a denied call: listed
+again under the result line's `permission_denials`, and counted in `denied`. A `.env`
+read that went through means the deny rules did not load for that arm, so discard
+the run. This lists every `.env` or `.env.*` path each log mentions:
+
+```bash
+grep -oE '"(file_path|path)":"([^"]*[/\\])?\.env(\.[^"/\\]*)?"' "$OUT"/q*-*.jsonl | sort -u
+```
 
 **Fixed overhead of arm B (measured on the warm-up prompt):** +244 tokens per session
 (19,325 vs 19,081). On a cold cache the cost roughly doubles for a one-word answer
@@ -109,6 +132,8 @@ facts about it, and neither one is "the" answer:
 - **Which branch is live is recorded by you, not by an agent**, from
   `40-kri-router/.env` line 3 (no agent reads `.env` files in this project). The graph
   cannot tell either, by design; only traces can (plan §4.2, slice S14).
+- **A value quoted from a `.env` file is recorded as a note, not scored**: it earns no
+  fact and is not a wrong claim (M11 #5, slice CTX-F2).
 
 ### Q1: end-to-end flow of `POST /api/v1/po` (13 facts)
 
@@ -204,7 +229,9 @@ or **unset** (the engine), as you read it from `40-kri-router/.env`.
 ## 4. Running it in the VS Code panel instead
 
 The panel uses the same Claude Code engine and the same MCP config, but gives less
-exact numbers. Per question:
+exact numbers. Once, first: `npm run claude:deny-env` in `D:/CodeGraph`. The panel
+loads user settings, and `claude:uninstall` leaves those rules alone, so both arms
+deny `.env` reads alike. Per question:
 
 - **Arm B:** start a new conversation with the folder `D:/###facilitator/dev-workspace`
   open, then paste the question.

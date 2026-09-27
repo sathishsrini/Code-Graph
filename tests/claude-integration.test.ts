@@ -26,7 +26,7 @@ import {
 } from "../src/integrations/claude-steering.ts";
 import {
   installHooks, uninstallHooks, hooksInstalled, hookCommand, mcpAddArgs,
-  MCP_SERVER_NAME,
+  MCP_SERVER_NAME, ENV_DENY_RULES, denyEnvReads, allowEnvReads, envReadsDenied,
 } from "../src/integrations/claude-settings.ts";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -333,6 +333,82 @@ describe("the settings merge", () => {
   });
 });
 
+// CTX-F2 (A/B finding M11 #5): plain Claude read a corpus `.env` and quoted it.
+// The "never read .env" rule lived only in this repo's CLAUDE.md, so it did not
+// reach sessions elsewhere. deny-env puts it in user settings as permission rules.
+describe("the .env deny rules (CTX-F2)", () => {
+  const userSettings = () => ({
+    model: "opus",
+    permissions: {
+      allow: ["Bash(npm test)"],
+      deny: ["Read(./secrets/**)", "Read(./.env)"],
+      defaultMode: "acceptEdits",
+    },
+    hooks: { Stop: [{ hooks: [{ type: "command", command: "/home/me/stop.sh" }] }] },
+  });
+
+  test("the rules cover .env and .env.* in any directory, anchored at the filesystem root", () => {
+    // `Read(**/.env)` would only cover the session's cwd; `//` holds in every
+    // project and, on Windows, across all drives.
+    assert.deepEqual(ENV_DENY_RULES, ["Read(//**/.env)", "Read(//**/.env.*)"]);
+  });
+
+  test("deny-env adds the rules to permissions.deny in empty settings", () => {
+    const s = denyEnvReads({});
+    assert.deepEqual(s, { permissions: { deny: [...ENV_DENY_RULES] } });
+    assert.equal(envReadsDenied(s), true);
+    assert.equal(envReadsDenied({}), false);
+  });
+
+  test("deny-env keeps every other key and the user's own allow and deny rules", () => {
+    const before = userSettings();
+    const s = denyEnvReads(before) as ReturnType<typeof userSettings>;
+    assert.equal(s.model, "opus");
+    assert.deepEqual(s.hooks, before.hooks);
+    assert.deepEqual(s.permissions.allow, before.permissions.allow);
+    assert.equal(s.permissions.defaultMode, "acceptEdits");
+    assert.deepEqual(s.permissions.deny, [...before.permissions.deny, ...ENV_DENY_RULES],
+      "user rules stay first, unchanged");
+  });
+
+  test("deny-env is idempotent and does not mutate its input", () => {
+    const before = userSettings();
+    const copy = structuredClone(before);
+    const once = denyEnvReads(before);
+    assert.deepEqual(before, copy);
+    assert.deepEqual(denyEnvReads(once), once);
+  });
+
+  test("deny-env adds only the rule that is missing", () => {
+    const s = denyEnvReads({ permissions: { deny: [ENV_DENY_RULES[0]] } }) as { permissions: { deny: string[] } };
+    assert.deepEqual(s.permissions.deny, [...ENV_DENY_RULES]);
+  });
+
+  test("allow-env removes exactly the rules deny-env adds", () => {
+    for (const original of [userSettings(), {}, { model: "sonnet" }, { permissions: { allow: ["Read"] } }]) {
+      assert.deepEqual(allowEnvReads(denyEnvReads(original)), original);
+    }
+    const kept = allowEnvReads(denyEnvReads(userSettings())) as ReturnType<typeof userSettings>;
+    assert.ok(kept.permissions.deny.includes("Read(./.env)"), "a rule the user wrote survives");
+  });
+
+  test("the .env rules and the steering hooks install and uninstall independently", () => {
+    const CMD = hookCommand("/opt/code-intel", "/opt/code-intel/config/repos.json");
+    const both = installHooks(denyEnvReads(userSettings()), CMD);
+    assert.equal(envReadsDenied(both), true);
+    assert.equal(hooksInstalled(both), true);
+    assert.deepEqual(uninstallHooks(both), denyEnvReads(userSettings()));
+    assert.deepEqual(allowEnvReads(uninstallHooks(both)), userSettings());
+  });
+
+  test("a permissions shape it does not understand is refused, not replaced", () => {
+    assert.throws(() => denyEnvReads([]), /settings/);
+    assert.throws(() => denyEnvReads({ permissions: "x" }), /permissions/);
+    assert.throws(() => denyEnvReads({ permissions: { deny: "Read" } }), /permissions\.deny/);
+    assert.throws(() => allowEnvReads({ permissions: { deny: {} } }), /permissions\.deny/);
+  });
+});
+
 describe("the installer script", () => {
   const run = (args: string[]) =>
     spawnSync(process.execPath, [INSTALLER, ...args], { encoding: "utf8" });
@@ -384,6 +460,53 @@ describe("the installer script", () => {
     assert.notEqual(r.status, 0);
     assert.match(r.stderr, /settings\.json/);
     assert.equal(readFileSync(settings, "utf8"), "{ \"model\": \"opus\", }");
+    assert.equal(readdirSync(home).length, 1, "no backup, no partial write");
+  });
+
+  test("deny-env backs up and merges, is idempotent, and allow-env restores the original (CTX-F2)", () => {
+    const home = join(dir, "claude-home-env");
+    mkdirSync(home, { recursive: true });
+    const settings = join(home, "settings.json");
+    const original = { model: "opus", permissions: { allow: ["Bash(npm test)"], deny: ["Read(./secrets/**)"] } };
+    writeFileSync(settings, JSON.stringify(original, null, 2));
+
+    const off = run(["status", "--settings", settings, "--skip-mcp"]);
+    assert.equal(off.status, 0, off.stderr);
+    assert.match(off.stdout, /env reads\s+not denied/);
+
+    const first = run(["deny-env", "--settings", settings]);
+    assert.equal(first.status, 0, first.stderr);
+    const denied = JSON.parse(readFileSync(settings, "utf8"));
+    assert.equal(envReadsDenied(denied), true);
+    assert.deepEqual(denied.permissions.allow, original.permissions.allow);
+    assert.equal(denied.model, "opus");
+
+    const backups = readdirSync(home).filter((f) => f.startsWith("settings.json.bak-code-intel-"));
+    assert.equal(backups.length, 1, "one backup of the original");
+    assert.deepEqual(JSON.parse(readFileSync(join(home, backups[0]!), "utf8")), original);
+
+    const second = run(["deny-env", "--settings", settings]);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(readdirSync(home).filter((f) => f.includes(".bak-code-intel-")).length, 1,
+      "an unchanged file is not rewritten or backed up again");
+
+    const on = run(["status", "--settings", settings, "--skip-mcp"]);
+    assert.match(on.stdout, /env reads\s+denied/);
+
+    const allowed = run(["allow-env", "--settings", settings]);
+    assert.equal(allowed.status, 0, allowed.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(settings, "utf8")), original);
+  });
+
+  test("deny-env leaves a settings file that does not parse untouched and fails (CTX-F2)", () => {
+    const home = join(dir, "claude-home-env-bad");
+    mkdirSync(home, { recursive: true });
+    const settings = join(home, "settings.json");
+    writeFileSync(settings, "{ \"permissions\": { \"deny\": [] }, }");
+    const r = run(["deny-env", "--settings", settings]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /settings\.json/);
+    assert.equal(readFileSync(settings, "utf8"), "{ \"permissions\": { \"deny\": [] }, }");
     assert.equal(readdirSync(home).length, 1, "no backup, no partial write");
   });
 

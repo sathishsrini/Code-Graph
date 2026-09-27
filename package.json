@@ -24,7 +24,9 @@
     "bench:workflow": "node scripts/workflow-bench.ts",
     "claude:install": "node scripts/claude-integration.ts install",
     "claude:uninstall": "node scripts/claude-integration.ts uninstall",
-    "claude:status": "node scripts/claude-integration.ts status"
+    "claude:status": "node scripts/claude-integration.ts status",
+    "claude:deny-env": "node scripts/claude-integration.ts deny-env",
+    "claude:allow-env": "node scripts/claude-integration.ts allow-env"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

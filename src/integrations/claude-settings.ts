@@ -134,3 +134,83 @@ export function installedEvents(settings: unknown): string[] {
 export function hooksInstalled(settings: unknown): boolean {
   return installedEvents(settings).length === EVENTS.length;
 }
+
+// ----------------------------------------------------------------------------
+// .env Read deny rules  —  slice CTX-F2  (A/B finding M11 #5)
+// ----------------------------------------------------------------------------
+// In the A/B check, plain Claude read a corpus `.env` and quoted it. The
+// "never read .env" rule lived only in this repo's CLAUDE.md, which no session
+// elsewhere loads, so it is written into user settings as permission rules.
+// Kept separate from the hooks: `deny-env`/`allow-env` never touch `hooks`, and
+// install/uninstall never touch `permissions`.
+//
+// Syntax (https://code.claude.com/docs/en/permissions, "Read and Edit"): Read
+// rules use gitignore patterns. `Read(.env)` and `Read(**/.env)` block a .env
+// "at or under the current directory" only; `Read(//**/.env)` blocks "any
+// `.env` anywhere on the filesystem", and on Windows "across all drives". A
+// `/path` rule in user settings would anchor at ~/.claude, so `//` it is.
+// Claude Code applies Read rules to Grep and Glob as a "best-effort attempt",
+// and to Bash file commands it recognises (cat, head, …), not to scripts.
+//
+// Trade-off: `.env.*` also blocks `.env.example`, which this repo tells Claude
+// to edit, and a Read deny also blocks Edit/Write on that path. Blocked anyway,
+// because `.env.local` and `.env.production` are where real secrets live (the
+// Next.js convention; 60-kri-next is a Next.js app). A `!.env.example` carve-out
+// cannot help: a `!` pattern "can't reach a rule anchored with" `//`.
+// ----------------------------------------------------------------------------
+
+/** What deny-env adds to `permissions.deny`, and all that allow-env removes. */
+export const ENV_DENY_RULES: readonly string[] = ["Read(//**/.env)", "Read(//**/.env.*)"];
+
+function requirePermissions(settings: unknown): Json {
+  if (!isObject(settings)) throw new Error("settings must be a JSON object");
+  const permissions = settings["permissions"];
+  if (permissions === undefined) return settings;
+  if (!isObject(permissions)) throw new Error("settings.permissions must be an object");
+  if (permissions["deny"] !== undefined && !Array.isArray(permissions["deny"])) {
+    throw new Error("settings.permissions.deny must be an array");
+  }
+  return settings;
+}
+
+/** Add the .env Read deny rules after the user's own; a rule already present is not repeated. */
+export function denyEnvReads(settings: unknown): Json {
+  const out = structuredClone(requirePermissions(settings));
+  const permissions = isObject(out["permissions"]) ? out["permissions"] : {};
+  const deny = (permissions["deny"] as unknown[] | undefined) ?? [];
+  const missing = ENV_DENY_RULES.filter((rule) => !deny.includes(rule));
+  if (missing.length === 0) return out;
+  permissions["deny"] = [...deny, ...missing];
+  out["permissions"] = permissions;
+  return out;
+}
+
+/**
+ * Remove exactly the rules deny-env adds. A `deny` list left empty is dropped,
+ * and `permissions` too if nothing remains, so allow(deny(s)) equals s unless
+ * s already held one of these rules or an empty `deny` list.
+ */
+export function allowEnvReads(settings: unknown): Json {
+  const out = structuredClone(requirePermissions(settings));
+  const permissions = out["permissions"];
+  if (!isObject(permissions) || !Array.isArray(permissions["deny"])) return out;
+  const deny = permissions["deny"] as unknown[];
+  const kept = deny.filter((rule) => !ENV_DENY_RULES.includes(rule as string));
+  if (kept.length === deny.length) return out;
+  if (kept.length > 0) permissions["deny"] = kept;
+  else delete permissions["deny"];
+  if (Object.keys(permissions).length === 0) delete out["permissions"];
+  return out;
+}
+
+/** Which of the .env rules `permissions.deny` currently holds. */
+export function deniedEnvRules(settings: unknown): string[] {
+  if (!isObject(settings) || !isObject(settings["permissions"])) return [];
+  const deny = settings["permissions"]["deny"];
+  return Array.isArray(deny) ? ENV_DENY_RULES.filter((rule) => deny.includes(rule)) : [];
+}
+
+/** True when every .env rule is in place. */
+export function envReadsDenied(settings: unknown): boolean {
+  return deniedEnvRules(settings).length === ENV_DENY_RULES.length;
+}
