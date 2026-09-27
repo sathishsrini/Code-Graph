@@ -1,0 +1,76 @@
+{
+  "//": "code-intel tool plans for orders_app.golden.json, read by scripts/workflow-bench.ts. The golden holds the questions, facts and edges and is not edited; this file holds only what is specific to code-intel: how the fixture is split into services, and each question's codegraph_* plan remapped to the closest of code-intel's four MCP tools. `from` records the original step. A step with no code-intel equivalent is listed under `unmapped` with the reason, never silently dropped.",
+  "//symbols": "code-intel seeds a query by function name, verbatim SCIP symbol or file path, not by file:line. Each target line is translated to the name defined there. Where that name is ambiguous in the store (__init__ matches 14 symbols), the step passes the verbatim SCIP symbol instead: it is the unambiguous locator code-intel accepts, as its own ambiguity answer instructs, and it is stable because runScipPython fixes --project-name to the service and --project-version to 0.0.0.",
+  "//services": "api declares include [] rather than [\"app/**\"]: api/ holds only app/ and a Dockerfile, so the file set is the same, but a single directory include makes runScipPython pass --target-only, scip-python then reports document paths relative to app/ (config.py, not app/config.py), and the app/** gate drops every document -- 0 symbols. web has no package.json in the fixture; the bench writes one named after the service into its temp copy, because scip-typescript otherwise names the package after whatever package.json encloses the temp dir and code-intel drops every symbol as non-local.",
+
+  "services": [
+    {
+      "name": "web", "root": "web", "lang": "ts", "framework": "none", "entrypoint": "",
+      "include": ["src/**"], "exclude": [], "baseUrlEnvVars": []
+    },
+    {
+      "name": "api", "root": "api", "lang": "py", "framework": "fastapi", "entrypoint": "app/main.py",
+      "include": [], "exclude": [], "baseUrlEnvVars": ["PAYMENT_URL"]
+    },
+    {
+      "name": "worker", "root": "worker", "lang": "py", "framework": "none", "entrypoint": "consumers.py",
+      "include": [], "exclude": [], "baseUrlEnvVars": []
+    }
+  ],
+  "not_indexed": [
+    { "path": "payments/", "reason": "Go; code-intel's languages are ts | js | py" },
+    { "path": "db/, docker-compose.yml, k8s/, infra/", "reason": "SQL, YAML and Terraform; code-intel has no extractor for them" }
+  ],
+
+  "plans": {
+    "checkout_402_root_cause": {
+      "steps": [
+        { "tool": "security_path", "args": {},
+          "from": "codegraph_find_entry_points {}" },
+        { "tool": "context_pack", "args": { "symbol": "create_order" },
+          "from": "codegraph_get_ai_context api/app/routes/orders.py:10 intent=debug" },
+        { "tool": "endpoint_flow", "args": { "service": "api", "method": "POST", "path": "/api/orders", "depth": 6 },
+          "from": "codegraph_get_call_graph api/app/routes/orders.py:10 callees depth=6" },
+        { "tool": "context_pack", "args": { "symbol": "place_order" },
+          "from": "codegraph_get_ai_context api/app/services/order_service.py:14 intent=debug" },
+        { "tool": "impact", "args": { "symbol": "PaymentDeclined" },
+          "from": "codegraph_search_by_error PaymentDeclined" }
+      ],
+      "unmapped": [
+        { "from": "codegraph_get_curated_context {query}",
+          "reason": "no code-intel MCP tool takes a natural-language query; phrase search (P3-T3) is CLI-only" }
+      ]
+    },
+    "order_created_event_flow": {
+      "steps": [
+        { "tool": "context_pack", "args": { "symbol": "place_order", "includeSource": false },
+          "from": "codegraph_get_callees api/app/services/order_service.py:14 depth=2" },
+        { "tool": "context_pack", "args": { "symbol": "publish" },
+          "from": "codegraph_get_ai_context api/app/events.py:10 intent=explain" },
+        { "tool": "context_pack", "args": { "symbol": "handle_order_created" },
+          "from": "codegraph_get_ai_context worker/consumers.py:13 intent=explain" }
+      ],
+      "unmapped": [
+        { "from": "codegraph_find_entry_points {entryType: event_handler}",
+          "reason": "code-intel models HTTP routes only; there is no event-handler entry kind" }
+      ]
+    },
+    "order_call_chain": {
+      "steps": [
+        { "tool": "endpoint_flow", "args": { "service": "api", "method": "POST", "path": "/api/orders", "depth": 1 },
+          "from": "codegraph_get_call_graph api/app/routes/orders.py:10 callees depth=1" },
+        { "tool": "context_pack", "args": { "symbol": "place_order", "includeSource": false },
+          "from": "codegraph_get_callees api/app/services/order_service.py:14 depth=1" },
+        { "tool": "context_pack", "args": { "symbol": "scip-python python api 0.0.0 `app.services.order_service`/OrderService#__init__().", "includeSource": false },
+          "from": "codegraph_get_callees api/app/services/order_service.py:11 depth=1" },
+        { "tool": "impact", "args": { "symbol": "health", "depth": 1 },
+          "from": "codegraph_get_callers api/app/main.py:10 depth=1" },
+        { "tool": "impact", "args": { "symbol": "create_order", "depth": 1 },
+          "from": "codegraph_get_callers api/app/routes/orders.py:10 depth=1" },
+        { "tool": "impact", "args": { "symbol": "chargeHandler", "depth": 1 },
+          "from": "codegraph_get_callers payments/main.go:13 depth=1" }
+      ],
+      "unmapped": []
+    }
+  }
+}

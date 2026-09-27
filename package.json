@@ -20,7 +20,8 @@
     "db:reset": "node src/cli.ts db bootstrap --reset",
     "postinstall": "node scripts/patch-scip-python.mjs",
     "index": "node src/cli.ts index",
-    "jev:verify": "node --env-file-if-exists=.env scripts/verify-jev.mjs"
+    "jev:verify": "node --env-file-if-exists=.env scripts/verify-jev.mjs",
+    "bench:workflow": "node scripts/workflow-bench.ts"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
