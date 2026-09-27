@@ -14,7 +14,7 @@
 // ============================================================================
 
 import { readFileSync, existsSync, statSync } from "node:fs";
-import { resolve, isAbsolute } from "node:path";
+import { resolve, isAbsolute, win32 } from "node:path";
 
 export type Lang = "ts" | "js" | "py";
 export type Framework = "fastify" | "fastapi" | "nextjs" | "none";
@@ -25,7 +25,7 @@ const FRAMEWORKS: readonly Framework[] = ["fastify", "fastapi", "nextjs", "none"
 export interface RepoConfig {
   /** Stable identifier. Becomes `repos.name` and the `service` node key. */
   name: string;
-  /** Absolute path to the repository root. */
+  /** Absolute path to the repository root; verbatim when not native to this host (CTX-F1). */
   rootPath: string;
   /** Service name if it differs from the repo name. */
   serviceName: string;
@@ -121,6 +121,19 @@ function asOptionalString(value: unknown, where: string): string | null {
   return asString(value, where);
 }
 
+/**
+ * Absolute on any host: POSIX `/x`, or what Windows calls absolute (`D:/x`,
+ * `\\server\share`, `\x`).
+ *
+ * CTX-F1. A rootPath is data about where a repo lives, not a path on this
+ * host. `config/repos.json` names the owner's D: drive and CI runs on Linux,
+ * where `isAbsolute("D:/…")` is false. Drive-relative `D:svc` stays rejected:
+ * its meaning depends on drive D:'s current directory.
+ */
+function absoluteAnywhere(p: string): boolean {
+  return isAbsolute(p) || win32.isAbsolute(p);
+}
+
 function describe(value: unknown): string {
   if (value === null) return "null";
   if (Array.isArray(value)) return "an array";
@@ -151,7 +164,7 @@ export function validateConfig(raw: unknown, options: LoadOptions = {}): Config 
     seenNames.add(name);
 
     const rootPath = asNonEmptyString(o["rootPath"], `${where}.rootPath`);
-    if (!isAbsolute(rootPath)) {
+    if (!absoluteAnywhere(rootPath)) {
       fail(`rootPath must be absolute, got ${JSON.stringify(rootPath)}`, `${where}.rootPath`);
     }
     if (checkPaths) {
@@ -163,7 +176,8 @@ export function validateConfig(raw: unknown, options: LoadOptions = {}): Config 
 
     return {
       name,
-      rootPath: resolve(rootPath),
+      // Resolved only where the path is native; a D:/ path on Linux is kept verbatim.
+      rootPath: isAbsolute(rootPath) ? resolve(rootPath) : rootPath,
       serviceName: o["serviceName"] === undefined
         ? name
         : asNonEmptyString(o["serviceName"], `${where}.serviceName`),

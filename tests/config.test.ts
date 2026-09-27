@@ -3,7 +3,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, win32 } from "node:path";
 import { validateConfig, loadConfig, repoByName, ConfigError } from "../src/config/repos.ts";
 
 const NO_PATH_CHECK = { checkPaths: false };
@@ -100,6 +100,24 @@ describe("validateConfig", () => {
     assert.throws(
       () => validateConfig(minimal({ rootPath: missing }), { checkPaths: true }),
       /rootPath does not exist/,
+    );
+  });
+
+  // config/repos.json names the owner's D: drive; CI runs on ubuntu-latest.
+  // A rootPath is data about where a repo lives, not a path on this host.
+  test("a Windows drive path is absolute on every host (CTX-F1)", () => {
+    const repo = validateConfig(minimal({ rootPath: "D:/ws/svc" }), NO_PATH_CHECK).repos[0]!;
+    assert.equal(win32.normalize(repo.rootPath), "D:\\ws\\svc");
+    assert.throws(
+      () => validateConfig(minimal({ rootPath: "D:/no/such/corpus-dir" }), { checkPaths: true }),
+      /rootPath does not exist/,
+    );
+  });
+
+  test("a drive-relative Windows path is rejected on every host", () => {
+    assert.throws(
+      () => validateConfig(minimal({ rootPath: "D:svc" }), NO_PATH_CHECK),
+      /rootPath must be absolute/,
     );
   });
 });
