@@ -20,9 +20,11 @@
 //
 // Two rules, both stated rather than tuned:
 //
-//   Confidence   the weakest of the edge and the range row (R36). A boot row
-//                is `certain`, so the underlying edge's confidence survives;
-//                a range a parser produced would make the credit `inferred`.
+//   Confidence   the weakest of the edge and the RANGE (R36). The range's
+//                start is boot's (certain), but its end is `functionExtent`,
+//                a delimiter scan: a parser's range. So a credit is at most
+//                `inferred`, even for a compiler-resolved call (plan CTX-S10a;
+//                the draft plan's gap V).
 //
 //   Opening line an edge has a line and no column, and the handler's opening
 //                line also holds the call that REGISTERS it (`app.post(`), the
@@ -34,6 +36,7 @@
 // ============================================================================
 
 import type { Confidence, EdgeType, FactStore } from "../store/db.ts";
+import { weakest } from "../query/flow.ts";
 
 /**
  * SQL: edge `e` lies inside the anonymous-handler range of chain row `rc`.
@@ -60,7 +63,7 @@ export interface HandlerCredit {
   service: string;
   method: string;
   url: string;
-  /** The range row's own confidence. `certain` for a boot row. */
+  /** The range's confidence: the chain row's, capped at `inferred` (its end is a parser's). */
   rangeConfidence: Confidence;
 }
 
@@ -138,7 +141,9 @@ export function scopedSitesInto(
       service: String(r["service_name"] ?? ""),
       method: String(r["method"] ?? ""),
       url: String(r["url"] ?? ""),
-      rangeConfidence: String(r["rc_conf"]) as Confidence,
+      // end_line came from functionExtent (a delimiter scan), so the range
+      // is never stronger than inferred, whatever the chain row says.
+      rangeConfidence: weakest(String(r["rc_conf"]) as Confidence, "inferred"),
     });
   }
   return [...sites.values()];

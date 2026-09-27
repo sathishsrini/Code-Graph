@@ -268,7 +268,10 @@ describe("CTX-S10a — a call inside an anonymous handler is credited to its rou
       [["route", "POST /api/v1/mail/send", `${FILE}:26`]],
       "the route, not the module, and not GET /health",
     );
-    assert.match(callers[0]!.detail, /^CALLS \[certain\]/, "the underlying edge's confidence");
+    // The call is certain (SCIP), but crediting it to the route rests on the
+    // handler's END, which functionExtent found by scanning delimiters: a
+    // parser's range. So the credit is inferred (plan CTX-S10a, gap V).
+    assert.match(callers[0]!.detail, /^CALLS \[inferred\]/, "weakest of the certain call and the parser-ended range");
   });
 
   test("context_pack's routes tier no longer bridges through the module", () => {
@@ -278,16 +281,17 @@ describe("CTX-S10a — a call inside an anonymous handler is credited to its rou
     assert.deepEqual(tier(pack.items, "routes").map((r) => r.name), ["POST /api/v1/mail/send"]);
   });
 
-  test("impact lists the route as a direct caller at the call site, and CERTAIN", () => {
+  test("impact lists the route as a direct caller at the call site, and INFERRED", () => {
     const r = impact(store, "checkUserAuth");
     assert.deepEqual(
       r.direct.map((s) => [s.kind, s.display, `${s.file}:${s.line}`, s.pathConfidence]),
-      [["route", "POST /api/v1/mail/send", `${FILE}:26`, "certain"]],
+      [["route", "POST /api/v1/mail/send", `${FILE}:26`, "inferred"]],
     );
     assert.equal(r.fanIn, 1);
-    // Before the fix it was reached only through the inline-check row, which
-    // is `inferred`; the compiler-resolved call makes it certain.
-    assert.deepEqual(r.routes.certain.map((x) => x.url), ["/api/v1/mail/send"]);
+    // The handler's start is boot-located, its end is a delimiter scan, so a
+    // route credited through that range is inferred, never certain.
+    assert.deepEqual(r.routes.certain.map((x) => x.url), []);
+    assert.deepEqual(r.routes.inferred.map((x) => x.url), ["/api/v1/mail/send"]);
     assert.deepEqual(allRoutes(r), ["POST /api/v1/mail/send"], "GET /health does not call it");
   });
 
