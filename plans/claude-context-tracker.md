@@ -77,7 +77,7 @@ command turns it red (restored from git afterwards).
 | CTX-S3 | Restore the Python service's routes (install venv requirements, boot) | 1 | — | ⏳ | — |
 | CTX-S4 | Python call tree through WSL Ubuntu-24.04 | 2 | your `sudo apt install` | ⏳ | — |
 | CTX-S5 | Git history for the corpus (`git init`, no `.env` tracked) | 1 | — | ⏳ | — |
-| CTX-S6 | One-command build + staleness line in every answer | 1 | — | ⏳ | — |
+| CTX-S6 | One-command build + staleness line in every answer | 1 | — | ✅ built: `node src/cli.ts build` reports every channel per repo (ok / failed with its error / skipped); every MCP answer ends with a `freshness` line (≈20 tokens, 0.25 ms). A test proves target repos are byte-identical after a build (no generated tsconfig, no `__pycache__`). Corpus acceptance yours (commands in the commit body) | `ce5bfeb` |
 | CTX-S7 | Edit context returns read ranges | 1 | — | ✅ built; corpus measurement yours (`context checkUserAuth --measure --no-source`). orders_app: Read(ranges) 54–60% of Read(files). Gap: one-line ranges where SCIP has no enclosing range → S7b (draft plan) | `f063ae8` |
 | CTX-S8 | Feature by description over MCP (`find_workflow`) | 2 | — | ⏳ | — |
 | CTX-S9 | Migrations → tables and columns | 1 | — | ⏳ | — |
@@ -120,7 +120,7 @@ Progress: **0 of 17 slices done** · 1 awaiting your review (S1) · 14 not start
 
 | Measure | Baseline | Now | Moved by |
 |---|---|---|---|
-| Tests | 526 pass, 0 fail | 595 pass, 0 fail (Linux, after F1, F2, S7, S13) | every slice |
+| Tests | 526 pass, 0 fail | 612 pass, 0 fail (Linux, after F1, F2, S6, S7, S13) | every slice |
 | Claude Code sees `code-intel` | no | **yes**: user scope, Connected; used in the headless run | S1 |
 | Cross-service `REQUESTS` edges | 0 (6 unresolved) | = | S3, S12 |
 | `51-integration` symbols / routes | 0 / 0 | = | S4 / S3 |
@@ -155,6 +155,7 @@ Progress: **0 of 17 slices done** · 1 awaiting your review (S1) · 14 not start
 
 ## Findings (not fixed, outside the slices)
 
+- **`scip-python` works on Linux.** S6's fixture build indexed `orders_app/api` with 75 symbols in this Linux container, the same count `5f9b525` recorded. That supports S4's WSL route; it does not explain the corpus's empty Windows index (S4 step 0).
 - **Fixed (CTX-F1):** the 5 Linux-only test failures (`D:/…` rootPaths). The suite is 595/595 on Linux.
 - **Claude Code loads MCP tool schemas on demand.** In the headless run (CLI 2.1.119)
   the `code-intel` tools sat behind `ToolSearch`: one extra call loaded
