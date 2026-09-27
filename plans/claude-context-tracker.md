@@ -78,19 +78,19 @@ command turns it red (restored from git afterwards).
 | CTX-S4 | Python call tree through WSL Ubuntu-24.04 | 2 | your `sudo apt install` | ⏳ | — |
 | CTX-S5 | Git history for the corpus (`git init`, no `.env` tracked) | 1 | — | ⏳ | — |
 | CTX-S6 | One-command build + staleness line in every answer | 1 | — | ⏳ | — |
-| CTX-S7 | Edit context returns read ranges | 1 | — | ⏳ | — |
+| CTX-S7 | Edit context returns read ranges | 1 | — | ✅ built; corpus measurement yours (`context checkUserAuth --measure --no-source`). orders_app: Read(ranges) 54–60% of Read(files). Gap: one-line ranges where SCIP has no enclosing range → S7b (draft plan) | `f063ae8` |
 | CTX-S8 | Feature by description over MCP (`find_workflow`) | 2 | — | ⏳ | — |
 | CTX-S9 | Migrations → tables and columns | 1 | — | ⏳ | — |
 | CTX-S10a | Calls and SQL inside anonymous handlers credited to the route, not the file (A/B finding M11 #1) | 1 | — | ⏳ | — |
 | CTX-S10b | SQL → columns on the path | 2 | S9, S10a | ⏳ | — |
 | CTX-S11 | API data models, route-level (Pydantic/zod) | 2 | S3 | ⏳ | — |
 | CTX-S12 | Frontend → backend calls | 1 | — | ⏳ | — |
-| CTX-S13 | Errors over MCP (`error_trace`: origin + correlated changes) | 2 | — | ⏳ | — |
+| CTX-S13 | Errors over MCP (`error_trace`: origin + correlated changes) | 2 | — | ✅ built; the 4 sections never merged; largest synthetic route 5,443 tokens. From uninstrumented traces the origin has no function or line → S19 (draft plan) | `246743e` |
 | CTX-S14 | OTel end to end on the corpus | 3 | S3, S5, S13 | ⏳ | — |
 | CTX-S15 | Web UI: errors, tables, frontend lane | 3 | S10b, S12, S13 | ⏳ | — |
 | CTX-S16 | Live A/B, 3 questions × 1 run | 4 | S1, S2, lanes A–D | 🔄 kit ready (`docs/ab-token-check.md`). First answers compared on your machine; findings recorded as M11, answer key corrected (error-handler note, live-config scoring). Token numbers not transferred yet | `2b45cde`, `docs(CTX-S16)` |
-| CTX-F1 | Tests green on Linux: `D:/…` rootPaths rejected on POSIX (5 tests) | fix | — | ⏳ | — |
-| CTX-F2 | `.env` Read deny rule: installer command + both A/B arms (A/B finding M11 #5) | fix | — | ⏳ | — |
+| CTX-F1 | Tests green on Linux: `D:/…` rootPaths rejected on POSIX (5 tests) | fix | — | ✅ 595/595 on Linux | `ec7099a` |
+| CTX-F2 | `.env` Read deny rule: installer command + both A/B arms (A/B finding M11 #5) | fix | — | ✅ built (`npm run claude:deny-env`, `Read(//**/.env)` + `Read(//**/.env.*)`, from the permissions docs); running it on your machine is yours. Open: it also blocks `.env.example` (draft plan Q4) | `c164cab` |
 | CTX-S17 | Onboard the first `syf-*` service | 4 | S1–S16 | ⛔ needs the `syf-*` path | — |
 | CTX-L1 | Containers and deploy (Docker, compose, k8s) | later | — | 🗓 | — |
 | CTX-L2 | Cloud IaC (Terraform) | later | — | 🗓 | — |
@@ -109,6 +109,7 @@ Progress: **0 of 17 slices done** · 1 awaiting your review (S1) · 14 not start
 | **Now** | **`main` branch:** keep it tracking `codegraph-upstream/main` (the Rust CodeGraph project), or repoint it to `origin/main` (`4cf32e9`, this project) | The two histories share no commits, so repointing replaces the branch. Not done without your word |
 | **Now** | **Live branch:** read `40-kri-router/.env` line 3 and record whether `PROCUREMENT_BASE_URL` is set, in `docs/measurements.md` M11 | The answer key now scores both branches; which one is live is yours to read, since no agent reads `.env` |
 | **Now** | **A/B numbers:** run `node docs/ab/summarize.mjs D:/CodeGraph/.codeintel/ab/q*-*.jsonl` and paste the table into M11 | The comparison was done in another session; its numbers are only in your logs |
+| **Now** | **Draft plan for the remaining work:** answer its 5 questions (§9) and approve it: [`claude-context-remaining.md`](claude-context-remaining.md) | No new slice starts before your approval |
 | At S4 | Run once in Ubuntu-24.04: `sudo apt install -y python3-pip python3-venv nodejs npm` | `sudo` needs your password |
 | At S4, step 0 | Possibly a decision: keep WSL, or use a Windows-only fix if the diagnostic finds one | `5f9b525` got Python symbols on Windows while today's corpus run failed. The route won't be switched without asking |
 | At S17 | The path to the `syf-*` repos, and which service to start with | Unknown today |
@@ -119,7 +120,7 @@ Progress: **0 of 17 slices done** · 1 awaiting your review (S1) · 14 not start
 
 | Measure | Baseline | Now | Moved by |
 |---|---|---|---|
-| Tests | 526 pass, 0 fail | 565 pass, 0 fail (Windows) | every slice |
+| Tests | 526 pass, 0 fail | 595 pass, 0 fail (Linux, after F1, F2, S7, S13) | every slice |
 | Claude Code sees `code-intel` | no | **yes**: user scope, Connected; used in the headless run | S1 |
 | Cross-service `REQUESTS` edges | 0 (6 unresolved) | = | S3, S12 |
 | `51-integration` symbols / routes | 0 / 0 | = | S4 / S3 |
@@ -127,7 +128,7 @@ Progress: **0 of 17 slices done** · 1 awaiting your review (S1) · 14 not start
 | SQL findings attributed to a file, not a function (41-kri-engine) | 25 | = | S10 |
 | Search phrases matched | 1 of 3 | = | S8 |
 | Benchmark, graph + still-to-read vs reading files (orders_app) | ×1.20, ×1.73 (not met) | = | S2 gate, then all |
-| Tool list | ≈1,165 tokens | loaded on demand via `ToolSearch` (see findings) | kept under 2,000 |
+| Tool list | ≈1,165 tokens | 1,449 tokens with `error_trace` and the read-range note; loaded on demand via `ToolSearch` | kept under 2,000 |
 | `spans` rows | 0 | = | S14 |
 | Corpus repos with git history | 0 of 4 | = | S5 |
 
@@ -154,11 +155,7 @@ Progress: **0 of 17 slices done** · 1 awaiting your review (S1) · 14 not start
 
 ## Findings (not fixed, outside the slices)
 
-- **5 tests fail on Linux, so they would also fail on CI's `ubuntu-latest` runner.** `config/repos.json`
-  and `tests/next-indexing.test.ts` use `D:/…` rootPaths. `path.isAbsolute` rejects those
-  on POSIX, so `validateConfig` throws: `config.test.ts` › loadConfig (4 tests) and
-  `next-indexing.test.ts` (1). They pass on Windows. This predates S1 and no slice
-  covers it yet.
+- **Fixed (CTX-F1):** the 5 Linux-only test failures (`D:/…` rootPaths). The suite is 595/595 on Linux.
 - **Claude Code loads MCP tool schemas on demand.** In the headless run (CLI 2.1.119)
   the `code-intel` tools sat behind `ToolSearch`: one extra call loaded
   `endpoint_flow`'s schema before it was used. So the ≈1,165-token tool list is not paid
