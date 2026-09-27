@@ -34,12 +34,17 @@ export function renderIndexReport(reports: IndexReport[]): string {
       `  scip       : ${r.symbols} symbols, ${r.calls} calls, ` +
       `${r.unresolvedCalls} unresolved`,
     );
+    // CTX-S10a: with boot's handler ranges, the file-scope count is what is
+    // left after crediting routes, so it is the number the queries show.
+    const h = r.handlerScope;
+    const fileScoped = h ? h.findings.fileScope : r.treesitter.fileScoped;
     lines.push(
       `  treesitter : ${r.treesitter.throws} throws, ` +
       `${r.treesitter.writes} writes, ${r.treesitter.reads} reads, ` +
       `${r.treesitter.configs} config reads` +
-      (r.treesitter.fileScoped > 0
-        ? `   (${r.treesitter.fileScoped} attributed to the file — no enclosing symbol)`
+      (fileScoped > 0
+        ? `   (${fileScoped} attributed to the file — no enclosing symbol` +
+          `${h ? " or route handler" : ""})`
         : ""),
     );
     if (r.ddl.files > 0) {
@@ -74,6 +79,15 @@ export function renderIndexReport(reports: IndexReport[]): string {
           `no SCIP join expected`,
         );
       }
+    }
+    if (h) {
+      // Both halves, never only the credit: what is left at file scope is the
+      // gap, and a gap that is not shown reads as zero (R11).
+      lines.push(
+        `  handlers   : ${h.calls.credited} calls, ${h.findings.credited} findings ` +
+        `credited to anonymous route handlers by range; ` +
+        `${h.calls.moduleScope} calls, ${h.findings.fileScope} findings left at file scope`,
+      );
     }
     for (const missing of r.missingArtifacts) {
       // Not a warning to be scrolled past. "No boot artifact" and "this

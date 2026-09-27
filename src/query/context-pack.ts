@@ -38,6 +38,8 @@ import type { FactStore } from "../store/db.ts";
 import { displayNameOf } from "../static/scip/symbol.ts";
 import { encodeToon, estimateTokens } from "../serializers/toon.ts";
 import { resolveSeed, type ImpactSeed } from "./impact.ts";
+import { weakest } from "./flow.ts";
+import { inHandlerRange, scopedSitesInto } from "../derive/handler-scope.ts";
 
 export const TIERS = [
   "seed", "callees", "callers", "routes", "security",
@@ -121,7 +123,9 @@ export function contextPack(
   const put = (tier: Tier, items: PackedItem[]) => byTier.set(tier, items);
 
   put("callees", neighbours(store, seed.nodeId, "out"));
-  put("callers", neighbours(store, seed.nodeId, "in"));
+  // CTX-S10a: `neighbours` leaves module callers out; they come back credited
+  // to the route whose anonymous handler holds the call, or labelled file-scope.
+  put("callers", [...neighbours(store, seed.nodeId, "in"), ...moduleScopeCallers(store, seed.nodeId)]);
   put("routes", routesFor(store, seed.nodeId));
   put("security", securityFor(store, seed.nodeId));
   put("config", touching(store, seed, "config", ["READS_CONFIG"]));
@@ -202,6 +206,7 @@ function neighbours(store: FactStore, nodeId: number, dir: "in" | "out"): Packed
        LEFT JOIN symbols s ON s.node_id = n.id
        LEFT JOIN files f ON f.id = s.file_id
       WHERE e.${self} = ? AND e.type IN ('CALLS', 'CALLS_EXTERNAL')
+        ${dir === "in" ? "AND COALESCE(s.symbol_kind, '') <> 'namespace'" : ""}
       ORDER BY n.key`,
   ).all(nodeId) as Array<Record<string, string | number | null>>).map((r) => ({
     tier: dir === "out" ? "callees" as const : "callers" as const,
@@ -211,6 +216,58 @@ function neighbours(store: FactStore, nodeId: number, dir: "in" | "out"): Packed
     where: r["file"] ? `${r["file"]}:${r["line"] ?? "?"}` : "",
   }));
 }
+
+/**
+ * Module-scope callers of the seed (CTX-S10a).
+ *
+ * A call inside an anonymous handler attributes to the module; the route
+ * whose boot-located handler range holds it is the caller a reader needs,
+ * listed at the call's file:line. A call outside every range stays the
+ * module's, and says so. One item per caller, its call lines joined.
+ */
+function moduleScopeCallers(store: FactStore, nodeId: number): PackedItem[] {
+  const byCaller = new Map<string, {
+    kind: string; name: string; detail: string; file: string; scope: string; lines: Set<number>;
+  }>();
+  for (const site of scopedSitesInto(store, [nodeId], ["CALLS", "CALLS_EXTERNAL"])) {
+    for (const route of site.routes.length > 0 ? site.routes : [null]) {
+      const confidence = route ? weakest(site.confidence, route.rangeConfidence) : site.confidence;
+      const id = `${route?.routeKey ?? site.srcKey}|${site.type}|${confidence}|${site.file}`;
+      const entry = byCaller.get(id) ?? {
+        kind: route ? "route" : "symbol",
+        name: route ? `${route.method} ${route.url}` : displayNameOf(site.srcKey),
+        detail: `${site.type} [${confidence}]${route ? " anonymous handler" : ""}`,
+        file: site.file ?? "?",
+        scope: route ? "" : " [file-scope]",
+        lines: new Set<number>(),
+      };
+      entry.lines.add(site.line);
+      byCaller.set(id, entry);
+    }
+  }
+  return [...byCaller.values()]
+    .map((c): PackedItem => ({
+      tier: "callers", kind: c.kind, name: c.name, detail: c.detail,
+      where: `${c.file}:${[...c.lines].sort((a, b) => a - b).join(",")}${c.scope}`,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * A route that runs the seed from inside its anonymous handler (CTX-S10a).
+ * Replaces the HANDLES -> module -> CALLS bridge, which put every route whose
+ * chain touches the module (an anonymous hook suffices) on the seed — the
+ * defect `impact` stopped on 2026-09-08. Binds the seed once.
+ */
+const RUNS_IN_ANONYMOUS_HANDLER = `
+  SELECT rc.route_node_id FROM route_chain rc
+    JOIN edges e ON ${inHandlerRange("e", "rc")}
+    JOIN symbols es ON es.node_id = e.src_node_id AND es.symbol_kind = 'namespace'
+   WHERE e.type = 'CALLS' AND e.dst_node_id = ?`;
+
+/** SQL: `h.dst_node_id` is not a module, so a HANDLES -> CALLS hop is a real one. */
+const NOT_VIA_MODULE = `NOT EXISTS (
+  SELECT 1 FROM symbols hs WHERE hs.node_id = h.dst_node_id AND hs.symbol_kind = 'namespace')`;
 
 /** Routes that run this symbol — either on their chain, or one call away. */
 function routesFor(store: FactStore, nodeId: number): PackedItem[] {
@@ -225,9 +282,10 @@ function routesFor(store: FactStore, nodeId: number): PackedItem[] {
               SELECT 1 FROM edges h
                 JOIN edges c ON c.src_node_id = h.dst_node_id
                WHERE h.src_node_id = r.node_id AND h.type = 'HANDLES'
-                 AND c.type = 'CALLS' AND c.dst_node_id = ?)
+                 AND c.type = 'CALLS' AND c.dst_node_id = ? AND ${NOT_VIA_MODULE})
+         OR r.node_id IN (${RUNS_IN_ANONYMOUS_HANDLER})
       ORDER BY r.service_name, r.url, r.method`,
-  ).all(nodeId, nodeId) as Array<{ service_name: string; method: string; url: string }>)
+  ).all(nodeId, nodeId, nodeId) as Array<{ service_name: string; method: string; url: string }>)
     .map((r) => ({
       tier: "routes" as const, kind: "route",
       name: `${r.method} ${r.url}`, detail: "", where: r.service_name,
@@ -253,9 +311,12 @@ function securityFor(store: FactStore, nodeId: number): PackedItem[] {
               UNION
               SELECT h.src_node_id FROM edges h
                 JOIN edges c ON c.src_node_id = h.dst_node_id
-               WHERE h.type = 'HANDLES' AND c.type = 'CALLS' AND c.dst_node_id = ?)
+               WHERE h.type = 'HANDLES' AND c.type = 'CALLS' AND c.dst_node_id = ?
+                 AND ${NOT_VIA_MODULE}
+              UNION
+              ${RUNS_IN_ANONYMOUS_HANDLER})
       ORDER BY r.url, rc.position`,
-  ).all(nodeId, nodeId) as Array<Record<string, string | null>>).map((r) => ({
+  ).all(nodeId, nodeId, nodeId) as Array<Record<string, string | null>>).map((r) => ({
     tier: "security" as const,
     kind: "check",
     name: r["name"] ?? "(shape match)",
@@ -272,12 +333,16 @@ function touching(
     ? [seed.fileNodeId] : [])];
   const placeholders = sources.map(() => "?").join(", ");
 
+  // CTX-S10a: a file-node edge inside an anonymous handler's range belongs to
+  // that route, not to the file, so it is no longer this seed's file scope.
   return (store.raw().prepare(
     `SELECT DISTINCT n.key, e.type, e.src_node_id
        FROM edges e JOIN nodes n ON n.id = e.dst_node_id
       WHERE e.src_node_id IN (${placeholders}) AND n.kind = ? AND e.type IN (${q})
+        AND (e.src_node_id = ?
+             OR NOT EXISTS (SELECT 1 FROM route_chain rc WHERE ${inHandlerRange("e", "rc")}))
       ORDER BY n.key`,
-  ).all(...sources, kind, ...types) as Array<Record<string, string | number>>).map((r) => ({
+  ).all(...sources, kind, ...types, seed.nodeId) as Array<Record<string, string | number>>).map((r) => ({
     tier: kind === "config" ? "config" as const : "datastores" as const,
     kind,
     name: String(r["key"]),

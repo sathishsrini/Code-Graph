@@ -34,6 +34,8 @@
 
 import type { Confidence, FactStore } from "../store/db.ts";
 import { displayNameOf } from "../static/scip/symbol.ts";
+import { weakest } from "./flow.ts";
+import { inHandlerRange, scopedSitesInto } from "../derive/handler-scope.ts";
 
 /**
  * Reverse-traversed edge types.
@@ -70,6 +72,11 @@ export interface AffectedSymbol {
   pathConfidence: Confidence;
   file: string | null;
   line: number | null;
+  /**
+   * `route` when the caller is a route credited through its anonymous
+   * handler (CTX-S10a); `file:line` is then the call site, not a definition.
+   */
+  kind: "symbol" | "route";
 }
 
 export interface AffectedRoute {
@@ -245,32 +252,34 @@ function fileNodeFor(store: FactStore, path: string | null): number | null {
 export function impact(
   store: FactStore, query: string, options: ImpactOptions = {},
 ): ImpactReport {
-  const db = store.raw();
   const maxDepth = options.maxDepth ?? 12;
   const utilityFanIn = options.utilityFanIn ?? DEFAULT_UTILITY_FAN_IN;
   const routeLimit = options.routeLimit ?? DEFAULT_ROUTE_LIMIT;
 
   const seed = resolveSeed(store, query);
 
-  const fanIn = (db.prepare(
-    `SELECT COUNT(DISTINCT src_node_id) AS n FROM edges
-      WHERE dst_node_id = ? AND type = 'CALLS'`,
-  ).get(seed.nodeId) as { n: number }).n;
-
   const closure = reverseClosure(store, seed.nodeId, maxDepth);
+  const handlers = creditAnonymousHandlers(store, seed, closure);
 
   // --- symbols, split at depth 1 (R37) ------------------------------------
   const direct: AffectedSymbol[] = [];
   const transitive: AffectedSymbol[] = [];
   for (const row of closure) {
-    if (row.kind !== "symbol") continue;
+    if (row.kind !== "symbol" || handlers.creditedModules.has(row.node_id)) continue;
     const entry: AffectedSymbol = {
       nodeId: row.node_id, key: row.key, display: displayNameOf(row.key),
       depth: row.depth, pathConfidence: row.path_conf as Confidence,
-      file: row.file_path, line: row.line,
+      file: row.file_path, line: row.line, kind: "symbol",
     };
     if (row.depth === 1) direct.push(entry); else transitive.push(entry);
   }
+  for (const caller of handlers.callers) {
+    if (caller.depth === 1) direct.push(caller); else transitive.push(caller);
+  }
+
+  // Distinct direct callers, counted AFTER the credit: a helper called from
+  // eight anonymous handlers has eight callers, not one module (CTX-S10a).
+  const fanIn = direct.length;
 
   // --- routes, segmented by path confidence -------------------------------
   const routes: ImpactReport["routes"] = { certain: [], inferred: [], unknown: [] };
@@ -299,7 +308,11 @@ export function impact(
   // Merged BEFORE bucketing. Adding it after left the route counted in
   // `totalRoutes` and missing from every confidence bucket, so the sections
   // summed to one less than the total (self-review, 2026-09-08).
-  for (const named of routesNamingSeed(store, seed)) {
+  //
+  // CTX-S10a adds the routes whose anonymous handler holds a module-scope
+  // call into the closure — the precise version of the same recovery, which
+  // also covers helpers no reviewed check list names.
+  for (const named of [...routesNamingSeed(store, seed), ...handlers.routes]) {
     const existing = seenRoute.get(named.nodeId);
     if (existing && !isBetterEvidence(named, existing)) continue;
     seenRoute.set(named.nodeId, named);
@@ -396,7 +409,8 @@ const CONF_RANK: Record<string, number> = {
  * (self-review, 2026-09-08).
  */
 function isBetterEvidence(
-  candidate: AffectedRoute, existing: AffectedRoute,
+  candidate: { pathConfidence: Confidence; depth: number },
+  existing: { pathConfidence: Confidence; depth: number },
 ): boolean {
   const a = CONF_RANK[candidate.pathConfidence] ?? 0;
   const b = CONF_RANK[existing.pathConfidence] ?? 0;
@@ -408,6 +422,63 @@ function byDepthThenKey(
   a: { depth: number; key: string }, b: { depth: number; key: string },
 ): number {
   return a.depth - b.depth || a.key.localeCompare(b.key);
+}
+
+/**
+ * Callers and routes credited through an anonymous handler (CTX-S10a).
+ *
+ * The walk stops at a module (see `reverseClosure`), and a module or file
+ * edge into anything it reached may lie inside an anonymous handler's
+ * boot-located range. Such a site is that ROUTE's: it becomes a caller at the
+ * call's file:line, and an affected route, one hop past the node it reached,
+ * as strong as the weakest of the path, the edge and the range (R36).
+ *
+ * A module all of whose sites were credited is no longer a caller. One with
+ * any site left over still is — that call is still the module's (R11).
+ */
+function creditAnonymousHandlers(
+  store: FactStore, seed: ImpactSeed, closure: ClosureRow[],
+): { callers: AffectedSymbol[]; routes: AffectedRoute[]; creditedModules: Set<number> } {
+  const reached = new Map<number, { depth: number; conf: Confidence; key: string }>([
+    [seed.nodeId, { depth: 0, conf: "certain", key: seed.key }],
+  ]);
+  for (const row of closure) {
+    if (row.kind !== "symbol" && row.kind !== "route") continue;
+    reached.set(row.node_id, { depth: row.depth, conf: row.path_conf as Confidence, key: row.key });
+  }
+
+  const callers = new Map<number, AffectedSymbol>();
+  const routes = new Map<number, AffectedRoute>();
+  const credited = new Set<number>();
+  const leftOver = new Set<number>();
+  for (const site of scopedSitesInto(store, [...reached.keys()], REVERSED)) {
+    if (site.routes.length === 0) { leftOver.add(site.srcNodeId); continue; }
+    credited.add(site.srcNodeId);
+    const via = reached.get(site.dstNodeId)!;
+    for (const r of site.routes) {
+      const depth = via.depth + 1;
+      const pathConfidence = weakest(weakest(via.conf, site.confidence), r.rangeConfidence);
+      const route: AffectedRoute = {
+        nodeId: r.routeNodeId, key: r.routeKey, service: r.service, method: r.method, url: r.url,
+        depth, pathConfidence,
+        viaSymbol: `anonymous handler calls ${displayNameOf(via.key)} at ${site.file}:${site.line}`,
+      };
+      const caller: AffectedSymbol = {
+        nodeId: r.routeNodeId, key: r.routeKey, display: `${r.method} ${r.url}`,
+        depth, pathConfidence, file: site.file, line: site.line, kind: "route",
+      };
+      const hadRoute = routes.get(r.routeNodeId);
+      if (!hadRoute || isBetterEvidence(route, hadRoute)) routes.set(r.routeNodeId, route);
+      const hadCaller = callers.get(r.routeNodeId);
+      if (!hadCaller || isBetterEvidence(caller, hadCaller)) callers.set(r.routeNodeId, caller);
+    }
+  }
+
+  return {
+    callers: [...callers.values()],
+    routes: [...routes.values()],
+    creditedModules: new Set([...credited].filter((id) => !leftOver.has(id))),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -505,17 +576,20 @@ function sharedNodes(
     sources.push({ id: fileNode, via: "file" });
   }
 
+  // CTX-S10a: on the file pass, an edge inside an anonymous handler's range
+  // is that route's, not the file's, so it is not this seed's coupling.
   const touchQuery = store.raw().prepare(
     `SELECT DISTINCT n.id, n.kind, n.key
        FROM edges e JOIN nodes n ON n.id = e.dst_node_id
       WHERE e.src_node_id = ? AND n.kind = ? AND e.type IN (${q})
+        AND (? = 0 OR NOT EXISTS (SELECT 1 FROM route_chain rc WHERE ${inHandlerRange("e", "rc")}))
       ORDER BY n.key`,
   );
 
   const touched: Array<{ id: number; kind: string; key: string; via: "symbol" | "file" }> = [];
   const seen = new Set<number>();
   for (const src of sources) {
-    for (const row of touchQuery.all(src.id, kind, ...types) as
+    for (const row of touchQuery.all(src.id, kind, ...types, src.via === "file" ? 1 : 0) as
       Array<{ id: number; kind: string; key: string }>) {
       if (seen.has(row.id)) continue;
       seen.add(row.id);

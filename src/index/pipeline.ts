@@ -56,6 +56,7 @@ import { resolveCrossService, type RouteTarget } from "../derive/cross-service.t
 import { callSiteOwner } from "../static/treesitter/ingest.ts";
 import { extractDdl, isDdlFile } from "../static/ddl.ts";
 import { ingestDdl, type DdlCounts } from "../static/ddl-ingest.ts";
+import { fileScopeTally, type FileScopeTally } from "../derive/handler-scope.ts";
 
 export interface IndexOptions {
   store: FactStore;
@@ -85,6 +86,13 @@ export interface IndexReport {
     routes: number; chainEntries: number; unjoined: number; framework: number;
     handles: number; inline: number;
   } | null;
+  /**
+   * CTX-S10a: module- and file-scope sites an anonymous handler's range
+   * credits to its route, and those still at file scope. Null without boot,
+   * which is the only source of the ranges. `treesitter.fileScoped` is the
+   * count before this credit.
+   */
+  handlerScope: FileScopeTally | null;
   /** Channels that produced nothing because their artifact was missing. */
   missingArtifacts: string[];
 }
@@ -126,7 +134,7 @@ export async function indexRepo(options: IndexOptions): Promise<IndexReport> {
       ddl: { files: 0, tables: 0, columns: 0, added: 0, gaps: 0, skipped: 0 },
       treesitter: { throws: 0, reads: 0, writes: 0, configs: 0, fileScoped: 0 },
       cfg: { functions: 0, blocks: 0, errorExits: 0, attributed: 0, unkeyed: 0 },
-      boot: null, missingArtifacts: [],
+      boot: null, handlerScope: null, missingArtifacts: [],
     };
   }
 
@@ -276,10 +284,16 @@ export async function indexRepo(options: IndexOptions): Promise<IndexReport> {
     }
   }
 
+  // --- 5b. anonymous-handler credit (CTX-S10a) -----------------------------
+  // Counted, not written: the credit is derived at read time from the edges
+  // and the chain rows just stored, so this is the split the queries will
+  // show. After boot, because the handler ranges are boot's.
+  const handlerScope = boot ? fileScopeTally(store, repoId) : null;
+
   store.finishRun(runId);
   return {
     repo: repo.name, change, purged, skipped: false, reason: plan.reason,
-    symbols, calls, unresolvedCalls, treesitter, ddl, cfg, boot, missingArtifacts,
+    symbols, calls, unresolvedCalls, treesitter, ddl, cfg, boot, handlerScope, missingArtifacts,
   };
 }
 
