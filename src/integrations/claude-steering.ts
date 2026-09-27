@@ -102,6 +102,7 @@ export function sessionInstruction(repos: IndexedRepo[]): string {
     `- ${tool("context_pack")}: what you need before editing a function`,
     `- ${tool("impact")}: what a change breaks`,
     `- ${tool("security_path")}: which checks run on which routes`,
+    `- ${tool("error_trace")}: why an endpoint fails (traces, failure surface, recent commits)`,
     "Then Read only the lines you will edit. Treat 'inferred' edges as leads, not facts.",
     "Where an answer lists a gap (UNKNOWN), read that code: the graph could not see it.",
   ].join("\n") + "\n";

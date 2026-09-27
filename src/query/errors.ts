@@ -28,6 +28,7 @@ import { execFileSync } from "node:child_process";
 import type { FactStore } from "../store/db.ts";
 import { displayNameOf } from "../static/scip/symbol.ts";
 import { spanPathsForRoute } from "../runtime/route-match.ts";
+import { RouteNotFound } from "./endpoint-flow.ts";
 
 // ---------------------------------------------------------------------------
 // M.1 — the static failure surface
@@ -152,15 +153,30 @@ export interface TraceSpan {
   httpRoute: string | null;
   httpStatus: number | null;
   durationUs: number;
+  /** `code.function.name` / `code.file.path`: only a manual span sets them (M10). */
+  codeFunction: string | null;
+  codeFilepath: string | null;
 }
 
 export interface RootCause {
   traceId: string;
   /** The DEEPEST error span — R59's origin. */
   origin: TraceSpan | null;
+  /** Where the origin sits in the code, or why that is not known (CTX-S13). */
+  originCode: OriginCode | null;
   /** Origin first, then each ancestor up to the root: the propagation chain. */
   propagation: TraceSpan[];
   spans: TraceSpan[];
+}
+
+export interface OriginCode {
+  /** The function the span names. Null when the span names none. */
+  function: string | null;
+  file: string | null;
+  /** The function's definition line, from the graph. Spans carry no line. */
+  line: number | null;
+  /** How the function was placed in the graph, or why it was not. */
+  basis: string;
 }
 
 /**
@@ -175,7 +191,8 @@ export interface RootCause {
 export function traceRootCause(store: FactStore, traceId: string): RootCause {
   const rows = store.raw().prepare(
     `SELECT span_id, parent_span_id, name, service_name, status,
-            exception_type, exception_message, http_route, http_status, duration_us
+            exception_type, exception_message, http_route, http_status, duration_us,
+            code_function, code_filepath
        FROM spans WHERE trace_id = ? ORDER BY start_unix_us`,
   ).all(traceId) as Array<Record<string, string | number | null>>;
 
@@ -193,6 +210,8 @@ export function traceRootCause(store: FactStore, traceId: string): RootCause {
       httpRoute: (r["http_route"] as string | null) ?? null,
       httpStatus: r["http_status"] === null ? null : Number(r["http_status"]),
       durationUs: Number(r["duration_us"] ?? 0),
+      codeFunction: (r["code_function"] as string | null) ?? null,
+      codeFilepath: (r["code_filepath"] as string | null) ?? null,
     });
   }
 
@@ -227,7 +246,54 @@ export function traceRootCause(store: FactStore, traceId: string): RootCause {
     }
   }
 
-  return { traceId, origin, propagation, spans: [...byId.values()] };
+  return {
+    traceId, origin,
+    originCode: origin ? locateOrigin(store, origin) : null,
+    propagation, spans: [...byId.values()],
+  };
+}
+
+/**
+ * The origin span's function, placed in the graph (CTX-S13, goal G6).
+ *
+ * The span names the function (`code.function.name`, observed); the graph gives
+ * its file and definition line. The name is matched within the span's own
+ * service and, when the span gives one, the file: the span's path is usually
+ * absolute and the graph's is repo-relative, so it must END with the graph's.
+ * Two matches are reported as ambiguous rather than picked, as `route-match.ts`
+ * does for two templates. A span without the attribute says so: blank would
+ * read as "no function", and the truth is "the span did not say" (M10).
+ */
+export function locateOrigin(store: FactStore, span: TraceSpan): OriginCode {
+  if (!span.codeFunction) {
+    return {
+      function: null, file: null, line: null,
+      basis: "span has no code.function.name (auto-instrumentation does not set it; M10)",
+    };
+  }
+  const path = span.codeFilepath?.replace(/\\/g, "/") ?? null;
+  const rows = store.raw().prepare(
+    `SELECT f.path AS file, s.start_line AS line
+       FROM symbols s
+       JOIN files f ON f.id = s.file_id
+       JOIN repos r ON r.id = f.repo_id
+      WHERE s.display_name = ? AND COALESCE(r.service_name, r.name) = ?
+        AND (? IS NULL OR ? = f.path OR substr(?, -length(f.path) - 1) = '/' || f.path)`,
+  ).all(span.codeFunction, span.service, path, path, path) as
+    Array<{ file: string; line: number | null }>;
+
+  if (rows.length === 1) {
+    return {
+      function: span.codeFunction, file: rows[0]!.file, line: rows[0]!.line,
+      basis: path ? "span code.function.name + code.file.path" : "span code.function.name",
+    };
+  }
+  return {
+    function: span.codeFunction, file: path, line: null,
+    basis: rows.length === 0
+      ? `no symbol ${span.codeFunction} in ${span.service}'s graph`
+      : `${rows.length} symbols named ${span.codeFunction}; not picked`,
+  };
 }
 
 /**
@@ -370,7 +436,15 @@ export function errorPaths(
   const route = store.raw().prepare(
     "SELECT node_id FROM routes WHERE service_name = ? AND method = ? AND url = ?",
   ).get(service, method.toUpperCase(), url) as { node_id: number } | undefined;
-  if (!route) throw new Error(`no route ${method.toUpperCase()} ${url} in ${service}`);
+  if (!route) {
+    // Typed, with the service's routes, so the MCP tool can answer with them.
+    const candidates = store.raw().prepare(
+      "SELECT service_name, method, url FROM routes WHERE service_name = ? ORDER BY url, method",
+    ).all(service) as Array<{ service_name: string; method: string; url: string }>;
+    throw new RouteNotFound(service, method, url, candidates.map((c) => ({
+      service: c.service_name, method: c.method, url: c.url,
+    })));
+  }
 
   // Pass 1 and pass 2 run independently. Neither reads the other's result;
   // that is what "never merged into one verdict" means in code (R41).

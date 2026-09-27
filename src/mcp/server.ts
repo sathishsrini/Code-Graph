@@ -34,6 +34,7 @@ import { endpointFlow, RouteNotFound } from "../query/endpoint-flow.ts";
 import { impact, SeedNotFound } from "../query/impact.ts";
 import { securityPath } from "../query/security.ts";
 import { contextPack, packToToon, measureTokenDelta } from "../query/context-pack.ts";
+import { errorPaths, type ErrorReport } from "../query/errors.ts";
 import { encodeToon } from "../serializers/toon.ts";
 
 const CONFIDENCE_NOTE =
@@ -138,6 +139,29 @@ export const TOOLS = [
         includeSource: { type: "boolean", description: "Include the seed's raw source. Default true. Set false for the smallest pack." },
       },
       required: ["symbol"],
+    },
+  },
+  // CTX-S13 (goal G6): the CLI's `errors` report (P2-T10). Kept short: tool
+  // descriptions are what ToolSearch matches on, and the list's budget is 2,000
+  // tokens (plan §9).
+  {
+    name: "error_trace",
+    description:
+      "Why an HTTP endpoint fails. Four sections, never merged: OBSERVED = runtime " +
+      "traces (origin = deepest errored span: service, function, file:line, error; " +
+      "and the span path from the route); STATIC FAILURE SURFACE = parser-found " +
+      "error exits, what CAN fail; CORRELATED CHANGES = recent commits to those " +
+      "files, a lead, never a cause; UNKNOWN = what was not analysed. " +
+      `${CONFIDENCE_NOTE}`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        service: { type: "string", description: "Service name, e.g. '40-kri-router'." },
+        method: { type: "string", description: "HTTP method." },
+        path: { type: "string", description: "Route template, e.g. '/api/v1/po/:id'." },
+        depth: { type: "number", description: "Call depth for the static surface. Default 12." },
+      },
+      required: ["service", "method", "path"],
     },
   },
 ] as const;
@@ -267,6 +291,30 @@ export function callTool(store: FactStore, name: string, args: Args): string {
       }
     }
 
+    case "error_trace": {
+      try {
+        return errorTraceForModel(errorPaths(
+          store, str(args, "service"), str(args, "method"), str(args, "path"),
+          { maxDepth: num(args, "depth") },
+        ));
+      } catch (e) {
+        if (e instanceof RouteNotFound) {
+          // An answer, not a failure. A wrong service name gets "none" and the
+          // services that do exist, rather than an empty list to guess from.
+          const services = (store.raw().prepare(
+            "SELECT DISTINCT service_name FROM routes ORDER BY service_name",
+          ).all() as Array<{ service_name: string }>).map((s) => s.service_name);
+          return encodeToon({
+            error: e.message,
+            ...(e.candidates.length > 0
+              ? { knownRoutes: e.candidates.map((c) => `${c.method} ${c.url}`) }
+              : { knownRoutes: `none in ${str(args, "service")}`, knownServices: services }),
+          });
+        }
+        throw e;
+      }
+    }
+
     default:
       return encodeToon({
         error: `unknown tool "${name}"`,
@@ -333,6 +381,84 @@ function flowForModel(flow: ReturnType<typeof endpointFlow>): Record<string, unk
       at: `${u.file}:${u.line}`, symbol: u.srcDisplay, reason: u.reason,
     })),
   };
+}
+
+/**
+ * The errors report for a model (CTX-S13).
+ *
+ * The CLI's four headings, in its fixed order, each with its own evidence
+ * line. R41 is the shape: when a trace and the parser name the same function,
+ * that function appears once in each section, and nothing here says they
+ * agree. Two independent findings are worth more than one merged verdict.
+ */
+function errorTraceForModel(r: ErrorReport): string {
+  const traces = r.observed.filter((t) => t.origin !== null);
+  const observed: Record<string, unknown> = {
+    evidence: "runtime traces (OTel spans): what DID fail. Confidence observed.",
+  };
+  if (!r.observedAvailable) {
+    observed["status"] = "no spans in the store: nothing was recorded, which is not the " +
+      "same as nothing having failed";
+  } else if (traces.length === 0) {
+    observed["status"] = "no errored trace recorded for this route";
+  } else {
+    // R59: the DEEPEST errored span is the origin; shallower ones restate the status.
+    observed["origins"] = traces.map((t) => ({
+      trace: t.traceId,
+      service: t.origin!.service,
+      function: t.originCode?.function ?? "",
+      functionAt: t.originCode?.file ? `${t.originCode.file}:${t.originCode.line ?? "?"}` : "",
+      error: t.origin!.exceptionType ?? "",
+      message: t.origin!.exceptionMessage ?? "",
+      depth: t.origin!.depth,
+      basis: t.originCode?.basis ?? "",
+    }));
+    // Root first, so the rows read from the route down to where it broke.
+    observed["pathToOrigin"] = traces.flatMap((t) => [...t.propagation].reverse().map((s) => ({
+      trace: t.traceId, depth: s.depth, service: s.service, span: s.name,
+      function: s.codeFunction ?? "", status: s.status, http: s.httpStatus ?? "",
+    })));
+  }
+
+  const surface = [...r.staticSurface].sort((a, b) =>
+    (a.file ?? "").localeCompare(b.file ?? "") || (a.line ?? 0) - (b.line ?? 0));
+  const correlation = r.correlation;
+
+  return encodeToon({
+    service: r.service,
+    route: `${r.method} ${r.url}`,
+    OBSERVED: observed,
+    "STATIC FAILURE SURFACE": {
+      evidence: "parser-found error exits (tree-sitter CFG, THROWS): what CAN fail. " +
+        "Confidence inferred. Independent of OBSERVED.",
+      ...(surface.length === 0
+        ? { exits: "none detected; read UNKNOWN before taking that as 'nothing'" }
+        : {
+          exits: surface.map((f) => ({
+            at: `${f.file ?? "?"}:${f.line ?? "?"}`, function: f.display, form: f.form,
+            error: f.errorName ?? "", when: f.guardedBy ?? "", evidence: f.evidence,
+          })),
+        }),
+    },
+    "CORRELATED CHANGES": {
+      note: "recent commits to the files above: a ranking signal, never a cause",
+      ...(correlation.unavailable
+        ? { unavailable: correlation.unavailable }
+        : correlation.changes.length === 0
+          ? { commits: "none in the window" }
+          : {
+            commits: correlation.changes.map((c) => ({
+              date: c.lastDate, commit: c.lastCommit, file: c.file,
+              subject: c.subject, author: c.lastAuthor,
+            })),
+          }),
+    },
+    // R61: mandatory, and says "none" rather than disappearing.
+    UNKNOWN: r.unknowns.length === 0
+      ? "none: every chain entry resolved, every reachable symbol has control flow, " +
+        "and no unresolved call site is on this path"
+      : r.unknowns.map((reason) => ({ reason })),
+  });
 }
 
 // ---------------------------------------------------------------------------

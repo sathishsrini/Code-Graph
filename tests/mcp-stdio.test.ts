@@ -42,7 +42,7 @@ test("the registered MCP command starts from another folder and answers over std
     const { tools } = await client.listTools();
     assert.deepEqual(
       tools.map((t) => t.name).sort(),
-      ["context_pack", "endpoint_flow", "impact", "security_path"],
+      ["context_pack", "endpoint_flow", "error_trace", "impact", "security_path"],
     );
 
     // An empty graph is an answer, not a transport failure.

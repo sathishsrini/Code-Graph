@@ -104,7 +104,7 @@ describe("the hook's output", () => {
     const out = runHook(start("/ws/router"), deps());
     assert.ok(out.length > 0);
     assert.throws(() => JSON.parse(out), "plain stdout is what SessionStart adds to context");
-    for (const tool of ["endpoint_flow", "context_pack", "impact", "security_path"]) {
+    for (const tool of ["endpoint_flow", "context_pack", "impact", "security_path", "error_trace"]) {
       assert.match(out, new RegExp(`mcp__${MCP_SERVER_NAME}__${tool}`), `names ${tool}`);
     }
     assert.match(out, /engine-svc/, "names the services by the name endpoint_flow expects");
