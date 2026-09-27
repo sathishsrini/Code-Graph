@@ -35,6 +35,9 @@ The five outcomes map onto the goal's requirements as follows:
 | 2 Python tracing | You install it; you want the command | S22 is now a planned slice (§3). Install command in §3 S22. The receiver stays JSON-only: PyPI has `opentelemetry-exporter-otlp-json-http` (entry point `otlp_json_http`, Python ≥ 3.10) |
 | 3 Jev | The key is in your real `.env`; install `jev_gate` if missing | Your `.env` is on your machine, not in this cloud container. No package here provides `jev_gate`. `jev-dev-harness` on npm offers different tools (`jev_rank_context`, `jev_guard_check`, `jev_review_patch`, `jev_lint_semantic`), falls back to regex without a key, and was **not** installed. Follow-up in §9 |
 | 4 `.env.example` | Keep the strict rule; reword CLAUDE.md | Done: CLAUDE.md now says every `.env*` is blocked and the user edits `.env.example` from a line Claude gives |
+| 6 Jev | The key goes in as an environment variable here | This environment's network policy also blocks `api.typesafe.ai` (proxy 403), so the host must be allowed too. The `jev_gate` tool itself is still unnamed (§9) |
+| 7 G5 baseline | Whole files | Implemented (`306ace1`): both reading-the-files and still-to-read charge whole files; cited lines are reported for information |
+| 8 Merging | Cherry-pick | Done: S2, S9, S10a, S12 merged after a diff scan; 667/667. Gap V fixed on the way (`5345417`) |
 | 5 `syf-*` | The corpus is a sample of the real code (`41-kri-engine` → its `syf` counterpart) | S17 targets the `syf-*` counterparts of the four corpus repos. The differences the repo already records (ARCHITECTURE_MAP: plugin nesting, `preHandler` hooks, route schemas, `Depends()`, `throw` statements, larger code) are planned for: route-schema content is gap O. Nested plugins, `preHandler` and `Depends()` are already captured by the boot adapters and tested |
 
 ---
@@ -45,8 +48,7 @@ The five outcomes map onto the goal's requirements as follows:
 |---|---|
 | S1 | Code in, installed on your machine, headless acceptance passed. Open: VS Code panel check and your sign-off |
 | S16 | Kit in `docs/ab-token-check.md`. First answers recorded as M11; the token numbers are not transferred yet |
-| F1, F2, S6, S7, S13 | **Integrated** on the branch (`ec7099a`, `c164cab`, `ce5bfeb`, `f063ae8`, `246743e`). Suite 612/612 on Linux |
-| S2 (gate code), S9, S10a, S12 | **Done in agent worktrees** (`974d0e5`, `d6d207e`, `949335f`, `d2d14f6`). Merging them was **blocked by the session's permission check** ("untrusted code integration"). Your decision (§9 Q8). S12 also fixes an existing false edge: a template `/api/v1/po/${id}` no longer matches `GET /api/v1/po` |
+| F1, F2, S2 (code), S6, S7, S9, S10a, S12, S13 | **Integrated** on the branch; suite 667/667 on Linux. S2's corpus baseline run is yours (on `30301cb` + `de12f85` + `306ace1`) |
 | S3, S4, S5, S8, S10b, S11, S14, S15, S17, L1–L3 | Planned, not started |
 
 ---
@@ -70,9 +72,9 @@ The five outcomes map onto the goal's requirements as follows:
 | N | **`error_trace` has no size cap.** A synthetic route crossed Claude Code's 10,000-token MCP warning at about 280 error exits. The corpus router has 7; `syf-*` size is unknown | S13 report | 2, 5 | Delta to **S17** |
 | K | ~~`syf-*` facts are unknown~~ **Resolved in shape:** the `syf-*` repos are the production counterparts of the corpus (your answer). Still needed *at S17 start*, not for approval: their path, and your confirmation that their local config points at non-production resources before any boot or run | Q5 | 5 | §4 S17 |
 | O | **API models on Fastify routes are not captured.** The real services use route schemas (ARCHITECTURE_MAP), but the Fastify boot adapter records only `hasSchema: Boolean(routeOptions.schema)`, not the schema | `adapters/fastify/boot-dump.cjs:291` | 4, 5 | Delta to **S11** |
-| T | **What "reading the files" means for G5 is undecided.** S2's golden charges the baseline only for the lines the answer key cites, i.e. a reader who already knows where to look. Some questions then can hardly pass (`send_mail_feature` baseline = 2 lines). G5 says "reading the files" | S2 report | 1 | §9 Q7 |
+| T | ~~What "reading the files" means for G5 is undecided.~~ **Resolved: whole files (your answer 7), implemented in `306ace1`.** S2's golden charges the baseline only for the lines the answer key cites, i.e. a reader who already knows where to look. Some questions then can hardly pass (`send_mail_feature` baseline = 2 lines). G5 says "reading the files" | S2 report | 1 | §9 Q7 |
 | U | **The corpus baseline must predate the other slices** (plan §6 S2), but F1, F2, S6, S7 and S13 are already on the branch | S2 report | 1 | Delta to **S2** |
-| V | **S10a calls a parser-made range `certain`.** The handler's start comes from boot (certain); its end comes from `functionExtent`, a delimiter scan. By the plan's own rule, a credit through a parser-made range is `inferred` | S10a report, decision 3 | 1, 4 | Delta to **S10a** (a one-line change before it lands) |
+| V | ~~S10a calls a parser-made range `certain`.~~ **Fixed in `5345417`.** The handler's start comes from boot (certain); its end comes from `functionExtent`, a delimiter scan. By the plan's own rule, a credit through a parser-made range is `inferred` | S10a report, decision 3 | 1, 4 | Delta to **S10a** (a one-line change before it lands) |
 
 ---
 
@@ -248,8 +250,8 @@ tracker update.
 
 | Slice | Delta | Why |
 |---|---|---|
-| S2 | The corpus **baseline** runs on a separate checkout at `30301cb` plus S2's commit only, so it predates every other slice. Its "reading the files" definition follows your answer to Q7 | Gaps T, U |
-| S10a | Before it lands: a credit through a handler range whose end came from `functionExtent` is `inferred`, not `certain` | Gap V |
+| S2 | The corpus **baseline** runs on a separate checkout of `30301cb` + `de12f85` + `306ace1`, so it predates every other slice. Whole files on both sides of the gate | Gaps T, U |
+| S10a | Done (`5345417`): a credit through a handler range is `inferred` | Gap V |
 | S4 | The Linux venv and `scip-python` live under this repo's `.codeintel/wsl/`, never in the target repo | Gap I, G2 "target repos are not modified" |
 | S6 | `build` proves each target repo is byte-identical before and after (a file listing and hash, plus `git status --porcelain` where git exists). It sets `PYTHONDONTWRITEBYTECODE=1`, and the generated tsconfig is always removed | Gap G. Already sent to the running agent |
 | S8 | `find_workflow` gets a line in the SessionStart instruction. The tool list stays under 2,000 tokens | Features must be visible to Claude |
@@ -342,19 +344,15 @@ Critical path to Outcome 1: S2 → S3 → S12 → S18 → S10a/S10b → S21 → 
 
 ---
 
-## 9. Questions that still block approval
+## 9. What still blocks approval
 
-Q1, Q2, Q4 and Q5 are answered (§0). What is left:
+Q1–Q8 are answered (§0). One item is left, and it is only about the Jev gates,
+not about the plan's slices:
 
-6. **`jev_gate`.** Which tool gives you `jev_gate` (and `jev_verify`, `jev_decide`)?
-   The name of its MCP server or skill in your Claude setup is enough. It is not
-   `jev-dev-harness`. Then choose one: run the gate on your machine after each pushed
-   slice, or add `jev-key` as an environment variable in this cloud environment's
-   settings so a new session here can run it. Also: when a gate escalates on
-   confidence alone, with no finding (as S1's did), is your sign-off the resolution?
-7. **G5 baseline.** Should "reading the files" in the gate mean the **whole files**
-   the answer lives in (what Claude reads without the graph; recommended, since it is
-   the goal's wording), or only the **cited lines** (S2's current golden)?
-8. **Merging agent-built slices.** The session's permission check blocked cherry-picking
-   S2, S9, S10a and S12 from their worktrees. Either allow it (a Bash permission rule for
-   `git cherry-pick`), or review and merge those commits yourself.
+9. **Which `jev_gate`.** Name the tool or MCP server your S1 gates ran on, or approve
+   building a repo-local gate on `@typesafe-ai/sdk`. That gate would be written only
+   after reading the TypeSafe docs, which also needs `docs.typesafe.ai` allowed, so no
+   request field is invented. Also: when a gate escalates on confidence alone, with no
+   finding, is your sign-off the resolution (the S1 precedent)?
+
+Everything else in this plan is ready for your approval.

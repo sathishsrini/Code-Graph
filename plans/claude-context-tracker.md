@@ -73,18 +73,18 @@ command turns it red (restored from git afterwards).
 |---|---|---|---|---|---|
 | CTX (docs) | `goal.md`, the plan, `CLAUDE.md` link and status | — | — | ✅ done, pushed | `61ecce8`, `3791e92` |
 | **CTX-S1** | Connect Claude Code: user MCP + steering + headless check | 0 | — | 👀 installed and accepted headless; gate escalated; panel check pending | `36d39cf`, `test(CTX-S1)` |
-| CTX-S2 | Corpus benchmark and gate (baseline before other slices) | 1 | — | ⏳ next | — |
+| CTX-S2 | Corpus benchmark and gate (baseline before other slices) | 1 | — | 🔄 code built: `tests/fixtures/corpus.golden.json` (5 questions from the A/B keys), `--corpus`, `--gate`; the gate charges **whole files** (your decision). **Baseline run is yours**, on a checkout of `30301cb` + `de12f85` + `306ace1` so it predates the other slices | `de12f85`, `306ace1` |
 | CTX-S3 | Restore the Python service's routes (install venv requirements, boot) | 1 | — | ⏳ | — |
 | CTX-S4 | Python call tree through WSL Ubuntu-24.04 | 2 | your `sudo apt install` | ⏳ | — |
 | CTX-S5 | Git history for the corpus (`git init`, no `.env` tracked) | 1 | — | ⏳ | — |
 | CTX-S6 | One-command build + staleness line in every answer | 1 | — | ✅ built: `node src/cli.ts build` reports every channel per repo (ok / failed with its error / skipped); every MCP answer ends with a `freshness` line (≈20 tokens, 0.25 ms). A test proves target repos are byte-identical after a build (no generated tsconfig, no `__pycache__`). Corpus acceptance yours (commands in the commit body) | `ce5bfeb` |
 | CTX-S7 | Edit context returns read ranges | 1 | — | ✅ built; corpus measurement yours (`context checkUserAuth --measure --no-source`). orders_app: Read(ranges) 54–60% of Read(files). Gap: one-line ranges where SCIP has no enclosing range → S7b (draft plan) | `f063ae8` |
 | CTX-S8 | Feature by description over MCP (`find_workflow`) | 2 | — | ⏳ | — |
-| CTX-S9 | Migrations → tables and columns | 1 | — | ⏳ | — |
-| CTX-S10a | Calls and SQL inside anonymous handlers credited to the route, not the file (A/B finding M11 #1) | 1 | — | ⏳ | — |
+| CTX-S9 | Migrations → tables and columns | 1 | — | ✅ built: DDL extractor, `datastore_columns` detail table (option b, decided without Jev: confirm with `jev_decide`), DDL gaps stored, `tables` CLI. Corpus check yours: `index` then `tables` | `323ad39` |
+| CTX-S10a | Calls and SQL inside anonymous handlers credited to the route, not the file (A/B finding M11 #1) | 1 | — | ✅ built: credited at read time from the boot range (no new rows); credits are `inferred` (the range end is a delimiter scan). Corpus check yours: `index --force`, `context checkUserAuth` | `c510f87`, `5345417` |
 | CTX-S10b | SQL → columns on the path | 2 | S9, S10a | ⏳ | — |
 | CTX-S11 | API data models, route-level (Pydantic/zod) | 2 | S3 | ⏳ | — |
-| CTX-S12 | Frontend → backend calls | 1 | — | ⏳ | — |
+| CTX-S12 | Frontend → backend calls | 1 | — | ✅ built: wrapper `path` traced to literal call sites (up to 4 wrapper levels), method from the call site, every edge `inferred` with the env limit stated; fixes a template-to-list-route false match. Corpus counts yours | `92f2639` |
 | CTX-S13 | Errors over MCP (`error_trace`: origin + correlated changes) | 2 | — | ✅ built; the 4 sections never merged; largest synthetic route 5,443 tokens. From uninstrumented traces the origin has no function or line → S19 (draft plan) | `246743e` |
 | CTX-S14 | OTel end to end on the corpus | 3 | S3, S5, S13 | ⏳ | — |
 | CTX-S15 | Web UI: errors, tables, frontend lane | 3 | S10b, S12, S13 | ⏳ | — |
@@ -108,8 +108,9 @@ Progress: **0 of 17 slices done** · 1 awaiting your review (S1) · 14 not start
 | **Now** | **S1 sign-off:** accept S1 with the gate result above, or name what else should be tested | The gate escalated on confidence, not on a finding |
 | **Now** | **`main` branch:** keep it tracking `codegraph-upstream/main` (the Rust CodeGraph project), or repoint it to `origin/main` (`4cf32e9`, this project) | The two histories share no commits, so repointing replaces the branch. Not done without your word |
 | **Now** | **A/B numbers:** run `node docs/ab/summarize.mjs D:/CodeGraph/.codeintel/ab/q*-*.jsonl` and paste the table into M11 | The comparison was done in another session; its numbers are only in your logs |
-| **Now** | **Draft plan v2:** answer its questions 6–8 (§9) and approve it: [`claude-context-remaining.md`](claude-context-remaining.md) | No new slice starts before your approval |
-| **Now** | **Merge decision:** S2 (`974d0e5`), S9 (`d6d207e`), S10a (`949335f`), S12 (`d2d14f6`) are done in agent worktrees; cherry-picking them was blocked by the session's permission check | Allow `git cherry-pick`, or merge them yourself |
+| **Now** | **Draft plan v2:** approve it, or name what to change: [`claude-context-remaining.md`](claude-context-remaining.md) | No new slice starts before your approval |
+| **Now** | **Jev in the cloud:** add `jev-key` as an environment variable, and allow `api.typesafe.ai` (and `docs.typesafe.ai`) under Network access (session title bar → environment menu → Edit). A new session picks both up | This environment's network policy blocks `api.typesafe.ai` today, so a key alone is not enough |
+| **Now** | **Which `jev_gate`:** name the tool or MCP server your gates ran on, or approve building a repo-local gate on `@typesafe-ai/sdk` (after reading the TypeSafe docs) | No package here provides `jev_gate` |
 | When ready | **Python packages** for S3 and S22 (commands in the draft plan, §3 S22) | You said you will install them |
 | At S4 | Run once in Ubuntu-24.04: `sudo apt install -y python3-pip python3-venv nodejs npm` | `sudo` needs your password |
 | At S4, step 0 | Possibly a decision: keep WSL, or use a Windows-only fix if the diagnostic finds one | `5f9b525` got Python symbols on Windows while today's corpus run failed. The route won't be switched without asking |
@@ -121,7 +122,7 @@ Progress: **0 of 17 slices done** · 1 awaiting your review (S1) · 14 not start
 
 | Measure | Baseline | Now | Moved by |
 |---|---|---|---|
-| Tests | 526 pass, 0 fail | 612 pass, 0 fail (Linux, after F1, F2, S6, S7, S13) | every slice |
+| Tests | 526 pass, 0 fail | 667 pass, 0 fail (Linux, after F1, F2, S2, S6, S7, S9, S10a, S12, S13) | every slice |
 | Claude Code sees `code-intel` | no | **yes**: user scope, Connected; used in the headless run | S1 |
 | Cross-service `REQUESTS` edges | 0 (6 unresolved) | = | S3, S12 |
 | `51-integration` symbols / routes | 0 / 0 | = | S4 / S3 |
