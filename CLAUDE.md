@@ -145,9 +145,12 @@ Details and the failure modes behind each: `.claude/COMMON_MISTAKES.md`
 ## Environment Files
 
 **Never read `.env` files** or any file holding environment variables or secrets,
-even when one is open in the IDE. `.claudeignore` already excludes `.env*` (except
-`.env.example`). For setup questions, ask the user, point at the code that reads
-the variable, or edit `.env.example`. Never touch the real values.
+even when one is open in the IDE. This includes `.env.example`: the user-level deny
+rules from `npm run claude:deny-env` (`Read(//**/.env)`, `Read(//**/.env.*)`) block
+every `.env*` file on the machine, in this repo and in the target repos. For setup
+questions, ask the user or point at the code that reads the variable. When a new
+variable is needed, give the user the exact line to add to `.env.example`, and let
+them edit it. Never touch the real values.
 
 ---
 

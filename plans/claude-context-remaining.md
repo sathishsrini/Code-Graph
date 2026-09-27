@@ -1,7 +1,7 @@
 # CTX: plan for the remaining work (draft, awaiting approval)
 
 **Goal:** [`../goal.md`](../goal.md) · **Plan of record:** [`claude-context-plan.md`](claude-context-plan.md) · **Status:** [`claude-context-tracker.md`](claude-context-tracker.md)
-**Date:** 2026-09-27 · **State:** DRAFT. No slice defined here is implemented before you approve it.
+**Date:** 2026-09-27 · **State:** DRAFT v2. Your answers of 2026-09-27 are applied (§0) and the whole plan was re-checked (§6–§8). No slice defined here is implemented before you approve it.
 
 This document does **not** re-plan what is already planned or started. Slices S1–S17,
 S10a/S10b, L1–L3 and the fixes F1/F2 keep their definitions in the plan of record.
@@ -27,15 +27,27 @@ The five outcomes map onto the goal's requirements as follows:
 
 ---
 
+## 0. Your answers (2026-09-27) and what each changed
+
+| Q | Answer | Effect on the plan |
+|---|---|---|
+| 1 procurement-module | `PROCUREMENT_BASE_URL` holds a placeholder; leave it | S23 dropped. The procurement branch stays a named gap. S14 checks that live traffic reaches the engine (§4) |
+| 2 Python tracing | You install it; you want the command | S22 is now a planned slice (§3). Install command in §3 S22. The receiver stays JSON-only: PyPI has `opentelemetry-exporter-otlp-json-http` (entry point `otlp_json_http`, Python ≥ 3.10) |
+| 3 Jev | The key is in your real `.env`; install `jev_gate` if missing | Your `.env` is on your machine, not in this cloud container. No package here provides `jev_gate`. `jev-dev-harness` on npm offers different tools (`jev_rank_context`, `jev_guard_check`, `jev_review_patch`, `jev_lint_semantic`), falls back to regex without a key, and was **not** installed. Follow-up in §9 |
+| 4 `.env.example` | Keep the strict rule; reword CLAUDE.md | Done: CLAUDE.md now says every `.env*` is blocked and the user edits `.env.example` from a line Claude gives |
+| 5 `syf-*` | The corpus is a sample of the real code (`41-kri-engine` → its `syf` counterpart) | S17 targets the `syf-*` counterparts of the four corpus repos. The differences the repo already records (ARCHITECTURE_MAP: plugin nesting, `preHandler` hooks, route schemas, `Depends()`, `throw` statements, larger code) are planned for: route-schema content is gap O. Nested plugins, `preHandler` and `Depends()` are already captured by the boot adapters and tested |
+
+---
+
 ## 1. Work already planned or started (kept as is)
 
 | Slice | State on 2026-09-27 |
 |---|---|
 | S1 | Code in, installed on your machine, headless acceptance passed. Open: VS Code panel check and your sign-off |
 | S16 | Kit in `docs/ab-token-check.md`. First answers recorded as M11; the token numbers are not transferred yet |
-| F1, F2 | Done in an agent worktree (`5d7ff5f`, `a8329c6`), awaiting integration. F2 raises a question (§9, Q4) |
-| S7, S13 | Done in agent worktrees (`5f29795`, `60a0972`), awaiting integration. Their reports found gaps L, M and N below |
-| S2 (gate code), S6, S9, S10a, S12 | Running as parallel agents in worktrees; they will be integrated by cherry-pick |
+| F1, F2, S6, S7, S13 | **Integrated** on the branch (`ec7099a`, `c164cab`, `ce5bfeb`, `f063ae8`, `246743e`). Suite 612/612 on Linux |
+| S2 (gate code), S9, S10a | **Done in agent worktrees** (`974d0e5`, `d6d207e`, `949335f`). Merging them was **blocked by the session's permission check** ("untrusted code integration"). Your decision (§9) |
+| S12 | Running as a parallel agent in a worktree |
 | S3, S4, S5, S8, S10b, S11, S14, S15, S17, L1–L3 | Planned, not started |
 
 ---
@@ -45,19 +57,23 @@ The five outcomes map onto the goal's requirements as follows:
 | # | Gap | Evidence | Outcome hit | Covered by |
 |---|---|---|---|---|
 | A | **The main hop of `POST /api/v1/po` (router → engine) is unresolved.** `proxyToEngine` serves 9 routes and picks its base with an env-conditional ternary. S12 covers the frontend wrapper and S3 the router → integration call; nothing covers this hop | M9: the remaining router gaps are "a dynamic path (L127), an env-conditional ternary with two candidates (L176 ×2)". Answer key Q1 fact 4 (`server.js:176–186`) | 1, 3 | **S18** (new) |
-| B | **One candidate of that fork, procurement-module, is not in the corpus.** If `PROCUREMENT_BASE_URL` is set, the live path goes to a service the graph does not index | `config/repos.json` has 4 repos; M11 #2 and #4 | 1, 2, 3 | §9 Q1 |
+| B | ~~procurement-module is not in the corpus~~ **Resolved:** its env value is a placeholder (your answer). The branch stays a named gap; S14 verifies that traffic reaches the engine | M11 | — | §4 S14 |
 | C | **An observed error origin does not name a function and line.** The origin is the deepest error span: service, route, status and exception type/message. `code.function.name`/`code.file.path` need manual spans, and `exception.stacktrace` is not kept. S14's acceptance ("names the origin function and line") therefore depends on a capability that does not exist | M10 "Still unmeasured"; `src/runtime/otlp.ts` extracts only `exception.type`/`exception.message`; `src/query/errors.ts` `traceRootCause` | 2 | **S19** (new) |
-| D | **The Python service cannot be traced.** `adapters/otel/preload.mjs` is a Node `--import` preload. There is no Python instrumentation path, and the approved actions allow only `pip install -r requirements.txt` in that venv | `adapters/otel/`; goal.md "Approved actions" | 2 (and 5 if the `syf-*` service is FastAPI) | §9 Q2 → **S22** (conditional) |
+| D | **The Python service cannot be traced.** `adapters/otel/preload.mjs` is a Node `--import` preload; there is no Python path | `adapters/otel/` | 2, 5 (the `syf` counterpart of 51-integration is FastAPI) | **S22** (you install the packages) |
 | E | **Tables are not exposed to Claude in reverse.** After S9/S10a/S10b, a route's tables are on its path, but "what reads or writes `purchase_orders.status`?" has no MCP answer. S9's `tables` command is CLI-only | plan §6 S9 and S10b | 4 | **S20** (new) |
 | F | **Nothing handles a gate question that still fails** after lanes A–D. The plan assumes filling the gaps makes every question cheaper, but that is not proven | §2.4 baseline ×1.20 / ×1.73 | 1 | **S21** (new) |
-| G | **Indexing touches target repos.** The SCIP runner writes `tsconfig.codeintel.json` into the repo root and deletes it afterwards (`src/static/scip/runner.ts:141–179`). The FastAPI boot imports the app, which can write `__pycache__`. Boot runs service code, so it may open DB connections. On `syf-*` any leftover file is a modification | runner.ts; `adapters/fastapi/boot_dump.py` | 5 | Delta to **S6** (sent to the running agent) and **S17** |
+| G | **Indexing touches target repos.** The SCIP runner writes `tsconfig.codeintel.json` into the repo root and deletes it afterwards (`src/static/scip/runner.ts:141–179`). The FastAPI boot imports the app, which can write `__pycache__`. Boot runs service code, so it may open DB connections. On `syf-*` any leftover file is a modification | runner.ts; `adapters/fastapi/boot_dump.py` | 5 | **S6** (integrated: byte-identical proof) and **S17** |
 | H | **The UI slice lacks the router → engine data.** S15 depends on S10b, S12 and S13, but frontend → router → **engine** → table needs S18 too | Gap A | 3 | Delta to **S15** |
 | I | **The WSL venv location is unspecified.** S4 says "a Linux venv with the requirements"; inside the target repo it would modify it | plan §6 S4 | 1 | Delta to **S4** |
-| J | **Jev gates cannot run where the code is built.** There is no `jev-key` in this container and `jev_gate` is not a repo command | S1 build notes | all | §9 Q3 |
+| J | **Jev gates cannot run where the code is built.** Your `.env` with `jev-key` is on your machine; this container has none, and no package here provides `jev_gate` | S1 build notes; npm search | all | §9 Q6 |
 | L | **Read ranges can be one line long.** When SCIP gives a definition no `enclosingRange`, `pipeline.ts` stores start = end, the name line. M2 found that `enclosingRange` marks only the definitions that contain calls, so leaf functions are affected. A range for such a function makes Claude read one line of a function it is about to edit | S7 report; M1/M2 | 1 (G4) | **S7b** (new) |
 | M | **Correlated changes miss the origin's own file.** CORRELATED CHANGES looks only at the static surface's files, so a commit to the failing function's file is not listed when that function has no control-flow analysis | S13 report | 2 | Folded into **S19** |
 | N | **`error_trace` has no size cap.** A synthetic route crossed Claude Code's 10,000-token MCP warning at about 280 error exits. The corpus router has 7; `syf-*` size is unknown | S13 report | 2, 5 | Delta to **S17** |
-| K | **`syf-*` facts are unknown**: path, stack, whether it boots safely, where its traces are, its databases, its model style | tracker "Things that need you" | 5 | §9 Q5 |
+| K | ~~`syf-*` facts are unknown~~ **Resolved in shape:** the `syf-*` repos are the production counterparts of the corpus (your answer). Still needed *at S17 start*, not for approval: their path, and your confirmation that their local config points at non-production resources before any boot or run | Q5 | 5 | §4 S17 |
+| O | **API models on Fastify routes are not captured.** The real services use route schemas (ARCHITECTURE_MAP), but the Fastify boot adapter records only `hasSchema: Boolean(routeOptions.schema)`, not the schema | `adapters/fastify/boot-dump.cjs:291` | 4, 5 | Delta to **S11** |
+| T | **What "reading the files" means for G5 is undecided.** S2's golden charges the baseline only for the lines the answer key cites, i.e. a reader who already knows where to look. Some questions then can hardly pass (`send_mail_feature` baseline = 2 lines). G5 says "reading the files" | S2 report | 1 | §9 Q7 |
+| U | **The corpus baseline must predate the other slices** (plan §6 S2), but F1, F2, S6, S7 and S13 are already on the branch | S2 report | 1 | Delta to **S2** |
+| V | **S10a calls a parser-made range `certain`.** The handler's start comes from boot (certain); its end comes from `functionExtent`, a delimiter scan. By the plan's own rule, a credit through a parser-made range is `inferred` | S10a report, decision 3 | 1, 4 | Delta to **S10a** (a one-line change before it lands) |
 
 ---
 
@@ -193,13 +209,39 @@ tracker update.
 - **Commit boundary:** one commit per sub-slice, `feat(CTX-S21.<q>)`.
 - **Parallel:** sub-slices are parallel when they touch disjoint files.
 
-### Conditional slices (defined only after your answer)
+### CTX-S22: Python OTel for FastAPI (no source edits)
 
-- **CTX-S22: Python OTel for FastAPI** (if Q2 = yes). Instrument `51-integration` without
-  editing its source, via `opentelemetry-instrument` from a venv. Evidence: an error that
-  starts in the Python service is traced to its origin.
-- **CTX-S23: Onboard procurement-module** (if Q1 says it exists and should be indexed).
-  Add it to `repos.json` and build it; S18's second candidate then resolves to routes.
+- **Outcome:** 2 (G6), and 5 for the FastAPI `syf` counterpart.
+- **Problem:** Gap D.
+- **Depends on:** S3 (requirements installed, the service boots), S13. **You install the
+  packages first** (commands below).
+- **Your install commands** (Windows PowerShell). Check the venv's Python first; the JSON
+  exporter needs 3.10 or newer:
+  ```powershell
+  $py = "D:/###facilitator/dev-workspace/51-integration/.venv/Scripts/python.exe"
+  & $py --version
+  & $py -m pip install -r "D:/###facilitator/dev-workspace/51-integration/requirements.txt"
+  & $py -m pip install opentelemetry-distro==0.66b0 opentelemetry-exporter-otlp-json-http==0.66b0 opentelemetry-instrumentation-fastapi==0.66b0 opentelemetry-instrumentation-psycopg2==0.66b0
+  ```
+  The first `pip install` is S3's approved action; the second is this slice's.
+- **Changes:**
+  1. A start recipe beside `adapters/otel/preload.mjs`, as documentation and a
+     `traffic`-compatible command: `OTEL_SERVICE_NAME=51-integration`,
+     `OTEL_TRACES_EXPORTER=otlp_json_http`, `OTEL_METRICS_EXPORTER=none`,
+     `OTEL_LOGS_EXPORTER=none`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces`,
+     run under `.venv/Scripts/opentelemetry-instrument`. The app's own start command
+     comes from its repo, read-only.
+  2. A receiver test with a payload in the Python exporter's JSON shape, to prove it is
+     ingested like the Node one: hex ids, `http.route`, exception events.
+  3. S19's stack-trace parsing gains Python frames (`File "…", line N, in fn`).
+- **Tests:** a Python-shaped OTLP JSON payload is stored with the route, status and
+  exception. A Python traceback maps to the innermost symbol, once S4 gives Python
+  symbols; until then it is shown as file:line with "no symbol (no Python call tree)".
+- **Evidence (your machine):** an error that starts in `51-integration` is traced to
+  its file:line, with its commits under CORRELATED CHANGES.
+- **Jev gate:** diff, tests, the traced Python error.
+- **Commit boundary:** one commit, `feat(CTX-S22)`.
+- **Parallel:** yes with S20. After S19 (shared stack-trace code).
 
 ---
 
@@ -207,17 +249,19 @@ tracker update.
 
 | Slice | Delta | Why |
 |---|---|---|
+| S2 | The corpus **baseline** runs on a separate checkout at `30301cb` plus S2's commit only, so it predates every other slice. Its "reading the files" definition follows your answer to Q7 | Gaps T, U |
+| S10a | Before it lands: a credit through a handler range whose end came from `functionExtent` is `inferred`, not `certain` | Gap V |
 | S4 | The Linux venv and `scip-python` live under this repo's `.codeintel/wsl/`, never in the target repo | Gap I, G2 "target repos are not modified" |
 | S6 | `build` proves each target repo is byte-identical before and after (a file listing and hash, plus `git status --porcelain` where git exists). It sets `PYTHONDONTWRITEBYTECODE=1`, and the generated tsconfig is always removed | Gap G. Already sent to the running agent |
 | S8 | `find_workflow` gets a line in the SessionStart instruction. The tool list stays under 2,000 tokens | Features must be visible to Claude |
 | S10b | Evidence: every SQL → column link on the corpus is hand-checked, and the false-positive count is written down (R70 style) | "Database relationships inferred incorrectly" |
-| S11 | A test asserts that no field-to-column edge exists anywhere. Fastify route `schema` capture from boot is added only if Q5 says `syf-*` uses it | G9; Gap K |
+| S11 | A test asserts that no field-to-column edge exists anywhere. **Fastify route schemas** (`body`, `querystring`, `params`, `response`) are captured from boot as content, not a boolean, and linked route → model (`certain`), with a fixture using nested plugins | G9; Gap O |
 | S13 | `error_trace` gets a line in the SessionStart instruction (sent to the running agent) | Visible to Claude |
-| S14 | Depends on **S18** (so a router → engine edge can be promoted to `observed`) and **S19** (origin function and line). Evidence includes the live branch of the `PROCUREMENT_BASE_URL` fork | Gaps A, C |
+| S14 | Depends on **S18** (so a router → engine edge can be promoted to `observed`), **S19** (origin function and line) and **S22** (Python spans). The first `POST /api/v1/po` trace must show a span on `41-kri-engine`. If it does not, the placeholder is live at runtime: start the router with `PROCUREMENT_BASE_URL` set to empty on the command line (no file change) and repeat | Gaps A, B, C, D |
 | S15 | Depends on **S18** and **S3**. Evidence: `tests/ui.test.ts` asserts that the `/api/graph` JSON holds the full path frontend → router → engine → `purchase_orders`, plus a screenshot on the corpus graph | Gap H |
 | S16 | Rerun after S21, with F2's `.env` deny in both arms | Token claim measured on the finished graph |
 | S17 (size) | Measure `error_trace`, `endpoint_flow` and `context_pack` sizes on the largest `syf-*` route. Above 10,000 tokens, add a cap with an exact count, as `impact` already does | Gap N |
-| S17 | Split, once Q5 is answered, into: **a** build with the no-modification proof; **b** golden questions written from `syf-*` source plus the S2 gate; **c** headless `claude -p` from the `syf-*` folder showing graph calls and token totals; **d** `error_trace` on a real `syf-*` error (as Q5 allows); **e** the UI path | Outcome 5 needs each capability proved there, not only on the corpus |
+| S17 | Targets the `syf-*` counterparts of the four corpus repos, starting with router + engine (the chain Q1 of the answer key follows). Needs at its start: the path, and your confirmation that local config is non-production. Split into: **a** build with the no-modification proof; **b** golden questions written from `syf-*` source plus the S2 gate; **c** headless `claude -p` from the `syf-*` folder showing graph calls and token totals; **d** `error_trace` on a real `syf-*` error (as Q5 allows); **e** the UI path | Outcome 5 needs each capability proved there, not only on the corpus |
 
 ---
 
@@ -225,9 +269,9 @@ tracker update.
 
 ```
 Now      (running) S2-code  S6  S9  S10a  S12   ← integrate by cherry-pick; F1, F2, S7, S13 done
-You      S1 panel check + sign-off · S2 baseline run · S3 (pip install, boot) · S5 (git init) · S4 sudo
+You      S1 panel check + sign-off · S2 baseline on 30301cb+S2 · S3 + S22 pip installs · S5 (git init) · S4 sudo
 Wave 2   S7b(S7,S9,S10a)   S8   S10b(S9,S10a)   S11(fixture part; corpus part after S3)   S18(S12)   S19(S13)
-Wave 3   S20(S10b)   S14(S3,S5,S13,S18,S19; your machine)   S15(S10b,S12,S13,S18,S3)   [S22, S23 if approved]
+Wave 3   S20(S10b)   S22(S3,S13,S19; your install)   S14(S3,S5,S13,S18,S19,S22; your machine)   S15(S10b,S12,S13,S18,S3)
 Wave 4   S21.*  (gate closure)  →  S16 (final live A/B)
 Wave 5   S17a–e  (after Q5)
 Later    L1 · L2 · L3  (specified in the plan of record, not built)
@@ -248,33 +292,37 @@ Critical path to Outcome 1: S2 → S3 → S12 → S18 → S10a/S10b → S21 → 
 | G3 edit context | S7, S7b, S10a | read-range, end-line and caller tests | gate question "edit context" passes (Q3 facts 1–7, including the `:292` caller) |
 | G4 cut exploratory reads | S7, S7b, S1 steering | read ranges present and multi-line where the code is | S16: Read calls with vs without; S2: "still to read" limited to the ranges |
 | G5 token proof | S2, S21, S16 | pure gate function; gate per question | `--gate` all-pass in measurements; S16 table (n = 1, labelled as a sanity check) |
-| G6 error origin + correlated changes, over MCP and in the UI | S5, S13, S19, S14, S15 (+S22 if Q2) | fixture spans, stack trace, temp git repo | a real corpus error: `error_trace` gives the function, file:line and the comment-only commit; the same in the UI view |
+| G6 error origin + correlated changes, over MCP and in the UI | S5, S13, S19, S22, S14, S15 | fixture spans, stack trace, temp git repo | a real corpus error: `error_trace` gives the function, file:line and the comment-only commit; the same in the UI view |
 | G7 UI: service → service, frontend → backend, API → tables | S3, S12, S18, S10a/b, S15 | `tests/ui.test.ts` JSON path assertion | corpus screenshot of frontend → router → engine → `purchase_orders` |
 | G8 tables, columns, SQL reads/writes | S9, S10a, S10b, S20 | DDL fixture; SQL → column fixture; impact on a table | every corpus `CREATE TABLE` with its column count; hand-checked SQL links with an FP count; `impact purchase_orders` |
-| G9 API models, route-level, no field → column | S3, S11 | Pydantic and zod fixtures; the "no field → column" assertion | `POST /api/v1/mail/send` → `MailSendRequest` (certain, from boot) |
+| G9 API models, route-level, no field → column | S3, S11 | Pydantic, zod and Fastify-route-schema fixtures; the "no field → column" assertion | `POST /api/v1/mail/send` → `MailSendRequest` (certain, from boot); on `syf-*`, route schemas linked to their routes (S17b) |
 | G10 Python call tree via WSL | S4 | runner mapping test | `51-integration` symbols > 0 and CALLS > 0 |
 | G11 infrastructure later | L1–L3 | none (not built) | specified in the plan of record, §6 Lane F |
-| G12 corpus first, then `syf-*` | all · S17a–e | per S17 sub-slice | the S2 gate on `syf-*` questions; a headless run; an error trace; the UI path |
+| G12 corpus first, then `syf-*` | all · S17a–e | per S17 sub-slice | on the `syf` counterparts: the no-modification proof; the S2 gate on golden questions written from their source; a headless `claude -p` with graph calls; a real error traced; the UI path |
 | G13 Jev dev-time only | every slice | grep: no `jev`/`typesafe` import under `src/` query or MCP paths | the gate record per slice (Q3 decides where it runs) |
 
 ---
 
 ## 7. Outcome checks (if every slice above passes)
 
-1. **Whole workflow and fewer tokens:** yes, on the corpus, *if* S21 closes every
-   question and S1's panel check passes. Tokens are proved per question by the gate, and
-   a live run confirms it (S16). The remaining risks: Claude may skip the graph (measured,
-   not forced), and the Python call tree depends on S4.
-2. **Error → root cause:** yes for errors that start in the Node services (router,
-   engine), once S19 exists. **No** for errors that start in the Python service unless Q2
-   is answered yes (S22). Correlated changes rest on synthetic corpus history (S5), which
-   is already accepted in plan §4.2.
-3. **UI path:** yes once S18 is in. Without S18 the path breaks at router → engine.
-4. **Tables, columns, SQL, models:** yes on the corpus for tables, columns and SQL. Models
-   on the corpus are one Pydantic model; zod is proved on fixtures only (accepted in plan
-   §4.2). Correctness rests on the S10b hand-check. OPEN-9 is safe only if the corpus
-   services share one database (goal.md says "the corpus database", singular).
-5. **`syf-*`:** not plannable in detail yet. Q5 is needed.
+1. **Whole workflow and fewer tokens:** yes on the corpus, provided S21 closes every
+   gate question under the baseline you choose in Q7, and S1's panel check passes.
+   Tokens are proved per question by the gate and confirmed live by S16. Remaining risk,
+   stated rather than removed: Claude may still skip the graph; S16 measures it.
+2. **Error → root cause:** yes, for errors that start in the Node services (S19) and in
+   the Python service (S22, after your install). The origin is `observed` when a stack
+   trace exists, and an `inferred` candidate when a status was returned without an
+   exception. Correlated changes rest on synthetic corpus history (S5), already accepted
+   in plan §4.2.
+3. **UI path (frontend → router → engine → table):** yes, with S12, S18, S10a/S10b and
+   S15. Each link is proved by the `/api/graph` JSON assertion before the screenshot.
+4. **Tables, columns, SQL, models:** yes on the corpus (S9, S10a, S10b, S20, S11).
+   Correctness rests on the S10b hand-check with a written false-positive count. On
+   `syf-*`, Fastify route schemas are covered (gap O). OPEN-9 (no database identity) is
+   printed in every table answer; it is harmless on the corpus, where goal.md names one
+   database.
+5. **`syf-*`:** yes, *when S17a–e pass* on the `syf` counterparts. Each capability is
+   proved there, not inferred from the corpus.
 
 ## 8. Second pass: what could still make the goal false
 
@@ -287,34 +335,27 @@ Critical path to Outcome 1: S2 → S3 → S12 → S18 → S10a/S10b → S21 → 
 | Works only on the fixture corpus | S12 wrapper shape, S18 proxy shape, zod | S17b gate on `syf-*`; failures become S21-style sub-slices there |
 | Token claims without evidence | none left: every claim goes through the S2 gate or S16 | — |
 | UI without data | S15 before S18 | dependency added |
-| Error tracing without real traces | Python service; `syf-*` | Q2, Q5 |
-| DB relationships inferred wrongly | OPEN-9 across services; `SELECT *`; aliases | S10b hand-check; S20 prints OPEN-9; Q5 asks how `syf-*` databases are laid out |
-| Target repos modified | tsconfig, `__pycache__`, boot side effects, WSL venv | S6 and S4 deltas; S17a proof; Q5 on safe boot |
+| Error tracing without real traces | Python service; `syf-*` | S22; S17d runs the `syf` services under the same preload/instrument recipes |
+| DB relationships inferred wrongly | OPEN-9 across services; `SELECT *`; aliases; a parser range called certain | S10b hand-check; S20 prints OPEN-9; S17b checks same-named tables across `syf` services; S10a delta (gap V) |
+| Target repos modified | tsconfig, `__pycache__`, boot side effects, WSL venv | S6 proves byte-identical repos (integrated); S4 delta; S17a proof; S17 waits for your non-production confirmation before any boot |
 | Tool-list budget (≤ 2,000 tokens) | 1,165 before; S7 → 1,187; S13 → 1,428. S8 and S20 still add text | Each slice re-measures; S8/S20 must fit in the remaining ≈570 |
-| Unknown owner inputs | live env branch, A/B numbers | already listed as yours in the tracker |
+| Unknown owner inputs | A/B numbers; the `syf` path at S17 start | listed as yours in the tracker |
 
 ---
 
-## 9. Questions that block approval
+## 9. Questions that still block approval
 
-1. **procurement-module.** Is `PROCUREMENT_BASE_URL` set in `40-kri-router/.env` (line 3)?
-   If it is, where does the procurement-module repo live, and should it become a fifth
-   corpus service (S23)? If it is unset, the engine is the live branch and the corpus
-   covers it.
-2. **Python tracing.** May `51-integration` be traced with OpenTelemetry for Python?
-   That means installing the OTel Python packages into a venv outside the repo and
-   starting it under `opentelemetry-instrument` (S22). The alternative is to prove G6 on
-   the Node services only, with Python-origin errors reported as "not instrumented".
-3. **Jev gates.** This build container has neither `jev-key` nor your `jev_gate` tool.
-   Will you run the gate on your machine after each pushed slice? And when a gate
-   escalates on confidence without a finding (as with S1), is your sign-off the
-   resolution?
-4. **`.env.example`.** F2's `Read(//**/.env.*)` rule also blocks `.env.example`, which
-   conflicts with CLAUDE.md ("edit `.env.example`"). Keep the strict rule and reword
-   CLAUDE.md, or narrow the rule so `.env.example` stays readable?
-5. **`syf-*` (S17).** The path; which service first; its framework; whether it can boot
-   locally without reaching real databases or external services; where its traces are
-   (an existing collector we can read, or a local run under the preload); whether its
-   services share databases; its request/response model style (Pydantic, zod, Fastify
-   JSON Schema/TypeBox); and whether the `syf-*` services it calls should be onboarded
-   with it.
+Q1, Q2, Q4 and Q5 are answered (§0). What is left:
+
+6. **`jev_gate`.** Which tool gives you `jev_gate` (and `jev_verify`, `jev_decide`)?
+   The name of its MCP server or skill in your Claude setup is enough. It is not
+   `jev-dev-harness`. Then choose one: run the gate on your machine after each pushed
+   slice, or add `jev-key` as an environment variable in this cloud environment's
+   settings so a new session here can run it. Also: when a gate escalates on
+   confidence alone, with no finding (as S1's did), is your sign-off the resolution?
+7. **G5 baseline.** Should "reading the files" in the gate mean the **whole files**
+   the answer lives in (what Claude reads without the graph; recommended, since it is
+   the goal's wording), or only the **cited lines** (S2's current golden)?
+8. **Merging agent-built slices.** The session's permission check blocked cherry-picking
+   S2, S9 and S10a from their worktrees. Either allow it (a Bash permission rule for
+   `git cherry-pick`), or review and merge those commits yourself.

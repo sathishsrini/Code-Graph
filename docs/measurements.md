@@ -659,8 +659,10 @@ then rather than being estimated:
 | | with (Answer A) | | | | | | | |
 | | without (Answer B) | | | | 0 | | | |
 
-Live branch of `PROCUREMENT_BASE_URL` (owner to record from `40-kri-router/.env:3`):
-not yet recorded.
+Live branch of `PROCUREMENT_BASE_URL`: the owner confirmed (2026-09-27) that the
+value in `40-kri-router/.env` is a **placeholder**. procurement-module is not a real
+service here and is not onboarded. The engine is the branch that matters, and the
+procurement branch stays a stated gap.
 
 ### What the answers showed
 
