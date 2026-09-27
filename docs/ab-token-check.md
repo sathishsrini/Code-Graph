@@ -91,6 +91,25 @@ different failures, so keep the two counts apart.
 
 File names are relative to `D:/###facilitator/dev-workspace/`.
 
+**Scoring against the runtime config (Q1, Q2).** `proxyToEngine` picks its downstream
+from `PROCUREMENT_BASE_URL`: set → procurement-module, unset → the engine
+(`40-kri-router/server.js:172–176`). The keys describe the code, so both branches are
+facts about it, and neither one is "the" answer:
+
+- Q1 fact 4 (the engine, when the variable is unset) and fact 5 (procurement-module,
+  when it is set) are scored separately. An answer that names the condition earns both.
+- An answer that follows the live config (for example *"goes to procurement-module
+  because `PROCUREMENT_BASE_URL` is set"*) earns fact 5 and is **not** a wrong claim.
+  It earns fact 4 only if it also says the engine is used when the variable is unset.
+- An answer that says the request **always** goes to one of them, with no condition,
+  makes a wrong claim: the source contradicts "always".
+- Q1 facts 6–9 and Q2 facts 5–8 describe the engine branch. When the live config
+  routes to procurement-module they are still true of the code, but not of the live
+  path. Score them as written, and record the live branch next to the results (§3).
+- **Which branch is live is recorded by you, not by an agent**, from
+  `40-kri-router/.env` line 3 (no agent reads `.env` files in this project). The graph
+  cannot tell either, by design; only traces can (plan §4.2, slice S14).
+
 ### Q1: end-to-end flow of `POST /api/v1/po` (13 facts)
 
 | # | Fact | Source |
@@ -123,9 +142,16 @@ File names are relative to `D:/###facilitator/dev-workspace/`.
 | 8 | **500 `KRI41-PO-DB-001`**, other DB failure | engine handler catch | `41-kri-engine/server.js:≈230–233` |
 | 9 | A mail-send failure is **not** an error status: the PO still succeeds | router | `40-kri-router/server.js:≈228–240` |
 
-*Bonus:* the router's global `setErrorHandler` (`40-kri-router/server.js:325–343`)
-returns 422 `KRI40-VALIDATE-001` or 500 `KRI40-INTERNAL-001`, but only if the handler
-throws, which is not the main path.
+*Bonus:* the router's global `setErrorHandler` (`40-kri-router/server.js:325–343`).
+On this route it is reached in one realistic way: a **malformed JSON body**, which
+Fastify's body parser rejects before any handler runs, so the error reaches
+`setErrorHandler` as a **400**. Its **422 `KRI40-VALIDATE-001` branch cannot fire
+here**: that branch handles schema-validation errors, and `POST /api/v1/po` declares
+no schema. Its 500 `KRI40-INTERNAL-001` branch fires only if the handler throws,
+which is not the main path. Score the bonus for the 400; an answer that says this
+route can return 422 `KRI40-VALIDATE-001` makes a **wrong claim**.
+(Corrected 2026-09-27: the first version of this note listed the 422 as reachable.
+Both first A/B answers had it right; see `docs/measurements.md` M11.)
 
 ### Q3: edit context for `checkUserAuth` (7 facts)
 
@@ -147,7 +173,9 @@ mention them.
 
 ## 3. Record the result
 
-Copy this into `docs/measurements.md` under a new heading, with the date:
+Copy this into `docs/measurements.md` under a new heading, with the date. Above
+the table, write the live branch: `PROCUREMENT_BASE_URL` **set** (procurement-module)
+or **unset** (the engine), as you read it from `40-kri-router/.env`.
 
 | Q | Arm | totalTokens | usd | turns | graphCalls | fileReads | Accuracy | Wrong claims |
 |---|---|---|---|---|---|---|---|---|

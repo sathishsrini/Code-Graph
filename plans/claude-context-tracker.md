@@ -81,13 +81,16 @@ command turns it red (restored from git afterwards).
 | CTX-S7 | Edit context returns read ranges | 1 | — | ⏳ | — |
 | CTX-S8 | Feature by description over MCP (`find_workflow`) | 2 | — | ⏳ | — |
 | CTX-S9 | Migrations → tables and columns | 1 | — | ⏳ | — |
-| CTX-S10 | SQL → columns; route-accurate table access | 2 | S9 | ⏳ | — |
+| CTX-S10a | Calls and SQL inside anonymous handlers credited to the route, not the file (A/B finding M11 #1) | 1 | — | ⏳ | — |
+| CTX-S10b | SQL → columns on the path | 2 | S9, S10a | ⏳ | — |
 | CTX-S11 | API data models, route-level (Pydantic/zod) | 2 | S3 | ⏳ | — |
 | CTX-S12 | Frontend → backend calls | 1 | — | ⏳ | — |
 | CTX-S13 | Errors over MCP (`error_trace`: origin + correlated changes) | 2 | — | ⏳ | — |
 | CTX-S14 | OTel end to end on the corpus | 3 | S3, S5, S13 | ⏳ | — |
-| CTX-S15 | Web UI: errors, tables, frontend lane | 3 | S10, S12, S13 | ⏳ | — |
-| CTX-S16 | Live A/B, 3 questions × 1 run | 4 | S1, S2, lanes A–D | 🔄 kit ready (`docs/ab-token-check.md`: prompts, source-based answer keys, isolated arm configs, summariser); not run yet. A run today measures the *current* graph, before the waves that fill its gaps | — |
+| CTX-S15 | Web UI: errors, tables, frontend lane | 3 | S10b, S12, S13 | ⏳ | — |
+| CTX-S16 | Live A/B, 3 questions × 1 run | 4 | S1, S2, lanes A–D | 🔄 kit ready (`docs/ab-token-check.md`). First answers compared on your machine; findings recorded as M11, answer key corrected (error-handler note, live-config scoring). Token numbers not transferred yet | `2b45cde`, `docs(CTX-S16)` |
+| CTX-F1 | Tests green on Linux: `D:/…` rootPaths rejected on POSIX (5 tests) | fix | — | ⏳ | — |
+| CTX-F2 | `.env` Read deny rule: installer command + both A/B arms (A/B finding M11 #5) | fix | — | ⏳ | — |
 | CTX-S17 | Onboard the first `syf-*` service | 4 | S1–S16 | ⛔ needs the `syf-*` path | — |
 | CTX-L1 | Containers and deploy (Docker, compose, k8s) | later | — | 🗓 | — |
 | CTX-L2 | Cloud IaC (Terraform) | later | — | 🗓 | — |
@@ -104,6 +107,8 @@ Progress: **0 of 17 slices done** · 1 awaiting your review (S1) · 14 not start
 | **Now** | **S1 panel check:** in VS Code, open the folder `D:/###facilitator/dev-workspace`, start a **new** Claude conversation, and ask *"What runs when POST /api/v1/po is called on 40-kri-router? List the auth checks in order."* Expect a `code-intel` tool call in the transcript and no file reads. | G1 names the VS Code panel. The extension shares the CLI's MCP config and hooks (per the docs), but that has not been observed in the panel |
 | **Now** | **S1 sign-off:** accept S1 with the gate result above, or name what else should be tested | The gate escalated on confidence, not on a finding |
 | **Now** | **`main` branch:** keep it tracking `codegraph-upstream/main` (the Rust CodeGraph project), or repoint it to `origin/main` (`4cf32e9`, this project) | The two histories share no commits, so repointing replaces the branch. Not done without your word |
+| **Now** | **Live branch:** read `40-kri-router/.env` line 3 and record whether `PROCUREMENT_BASE_URL` is set, in `docs/measurements.md` M11 | The answer key now scores both branches; which one is live is yours to read, since no agent reads `.env` |
+| **Now** | **A/B numbers:** run `node docs/ab/summarize.mjs D:/CodeGraph/.codeintel/ab/q*-*.jsonl` and paste the table into M11 | The comparison was done in another session; its numbers are only in your logs |
 | At S4 | Run once in Ubuntu-24.04: `sudo apt install -y python3-pip python3-venv nodejs npm` | `sudo` needs your password |
 | At S4, step 0 | Possibly a decision: keep WSL, or use a Windows-only fix if the diagnostic finds one | `5f9b525` got Python symbols on Windows while today's corpus run failed. The route won't be switched without asking |
 | At S17 | The path to the `syf-*` repos, and which service to start with | Unknown today |

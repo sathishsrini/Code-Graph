@@ -640,4 +640,42 @@ second key) is wired and unexercised, and 0 symbols matched.
 
 ---
 
-**Last Updated**: 2026-09-09
+## M11 — The first A/B answers (CTX-S16 sanity check, 2026-09-27)
+
+Kit, prompts and answer keys: [`ab-token-check.md`](ab-token-check.md). Two answers
+were compared on the owner's machine: **Answer A** from Claude with `code-intel`, and
+**Answer B** from plain Claude (no MCP server, no hooks). One run each (n = 1): a
+sanity check, not a statistic.
+
+### Numbers
+
+Not transferred yet. The comparison was done in a separate session, and its logs are
+on the owner's machine under `D:/CodeGraph/.codeintel/ab/` (gitignored).
+`node docs/ab/summarize.mjs <logs>` regenerates this table, which stays blank until
+then rather than being estimated:
+
+| Q | Arm | totalTokens | usd | turns | graphCalls | fileReads | Accuracy | Wrong claims |
+|---|---|---|---|---|---|---|---|---|
+| | with (Answer A) | | | | | | | |
+| | without (Answer B) | | | | 0 | | | |
+
+Live branch of `PROCUREMENT_BASE_URL` (owner to record from `40-kri-router/.env:3`):
+not yet recorded.
+
+### What the answers showed
+
+| # | Finding | Evidence | What changed |
+|---|---|---|---|
+| 1 | **The graph misses a caller inside an anonymous handler.** `context_pack checkUserAuth` did not list the `POST /api/v1/mail/send` handler (`40-kri-router/server.js:292`) as a caller, and credited that call to the whole module | Answer A noticed it; an earlier `context_pack` output confirms it | Plan: slice **S10a** credits calls, not only SQL, to the route's handler |
+| 2 | **The graph cannot tell which branch of an env-driven fork is live.** It shows `PROCUREMENT_BASE_URL` → procurement-module *or* the engine, not which one runs | By design: the engine never reads env values (R23). Answer B found the live value in `.env` | Plan §4.2 states the limit; only S14's traces can show the live branch |
+| 3 | **The answer key's error-handler note was imprecise** | Both answers said malformed JSON reaches `setErrorHandler` as a 400, and that its 422 branch cannot fire for this route | Q2 bonus note corrected in the kit |
+| 4 | **The answer key did not account for the runtime config.** It assumed the engine is the target | Answer B cites `.env:3` setting `PROCUREMENT_BASE_URL`. Not verified here, since no agent reads `.env` | Scoring note for live-config answers added to the kit; the owner records the live branch |
+| 5 | **Plain Claude read a `.env` file in the corpus.** The "never read `.env`" rule exists only in this repo's `CLAUDE.md` | Answer B quotes `.env:3` | A Read deny rule for `.env` files (slice CTX-F2) |
+
+The finding that matters for the graph is #1: a caller the graph cannot see, stated
+as a module-level coupling, is a false negative in edit context. Everything else is
+the answer key and the test setup being corrected against the source.
+
+---
+
+**Last Updated**: 2026-09-27

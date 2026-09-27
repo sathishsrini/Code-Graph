@@ -151,12 +151,12 @@ and pays for both.
 |---|---|---|---|
 | G1/G2 | MCP server runs on stdio | Not registered with Claude Code; no steering | **S1** |
 | G5 | Scorer + bench on orders_app | No corpus golden questions; no gate; baseline not met (×1.20, ×1.73) | S2, S16 |
-| G3 endpoint flow | `endpoint_flow` over MCP | Python service empty; 0 REQUESTS; frontend calls unresolved; no tables/columns on the path | S3, S4, S12, S9, S10 |
+| G3 endpoint flow | `endpoint_flow` over MCP | Python service empty; 0 REQUESTS; frontend calls unresolved; no tables/columns on the path; calls inside anonymous handlers credited to the file | S3, S4, S12, S9, S10a, S10b |
 | G3 feature by description | `search` CLI (lexical, AND-only) | Not on MCP; 1/3 phrases match | S8 |
 | G3 edit context / G4 | `context_pack` over MCP | Returns start lines only, no read ranges; no staleness signal; the graph must be built by hand | S7, S6 |
 | G6 | `errors` CLI, proven once on corpus | Not on MCP; no UI view; no git history on corpus; no spans in current graph | S5, S13, S14, S15 |
 | G7 | UI with swim-lanes and REQUESTS edges | 0 REQUESTS; no frontend lane; no tables/columns in the view | S3, S12, S15 |
-| G8 | Table names from SQL literals | Migrations unparsed; no columns; SQL attributed to files | S9, S10 |
+| G8 | Table names from SQL literals | Migrations unparsed; no columns; SQL attributed to files | S9, S10a, S10b |
 | G9 | `routes.request_schema` column (unfilled) | No producer running (51 boot fails); no Pydantic/zod extraction | S11 |
 | G10 | `scip-python` wired, patched for Windows | Empty index; Linux route not set up | S4 |
 | G11 | — | Nothing extracted for Docker/k8s/Terraform/queues | L1–L3 (later) |
@@ -189,6 +189,7 @@ The plan cannot remove these. It keeps them visible instead.
 | "correlated recent changes" (corpus) | Proven on **synthetic** history | the corpus has no git; you approved `git init` + a comment-only test commit | Shows the mechanism works, not that it is useful on real history |
 | "API data models" (corpus) | Corpus has **1** Pydantic model, 0 zod | grep | zod proven only on in-repo fixtures until `syf-*` |
 | "real code like syf-*" | Only a placeholder | path unknown | S17 needs the path |
+| "how API calls connect" (env-driven forks) | Where code picks its downstream from an env var, the graph shows **every candidate and cannot say which one is live**. Example: `proxyToEngine` goes to procurement-module when `PROCUREMENT_BASE_URL` is set, else to the engine | The engine never reads env values (plan v2 R23: keys, never values), and the live value differs per machine and deployment | Only observed traces (S14) show the live branch. Until then an answer must name the condition, not pick a side. Found by the first A/B answers (`docs/measurements.md` M11) |
 
 ### 4.3 Things that already work (so the gaps above are not overstated)
 Boot-verified route chains (certain) for the two Fastify services · 94 certain call
@@ -330,16 +331,28 @@ Template: **Gap** (fact) · **Change** · **Test first** · **Accept** (measured
   services with same-named tables in different databases would look coupled (plan v2
   OPEN-9). Stated in answers, not hidden.
 
-**CTX-S10: SQL → columns, and route-accurate table access** · G7 G8 · depends: S9
-- Gap: SQL findings sit on the file (25 in the engine), so route → table is coarse.
-- Change: attribute SQL findings inside a boot-located anonymous handler's range
-  (`route_chain` line/end_line) to that route; parse column lists from
-  INSERT/UPDATE/SELECT literals (`SELECT *` recorded as "all columns",
-  `inferred`); `endpoint_flow` and `context_pack` show tables and columns on the path.
+**CTX-S10a: Route-accurate attribution inside anonymous handlers** · G3 G4 G7 · depends: —
+- Gap: calls and SQL inside an anonymous route handler are credited to the whole
+  file. `context_pack checkUserAuth` does not list the `POST /api/v1/mail/send`
+  handler (`40-kri-router/server.js:292`) as a caller, and 25 of the engine's SQL
+  findings sit on the file (§2.6). Found for calls by the first A/B answers (M11).
+- Change: a call site or SQL finding inside a boot-located anonymous handler's range
+  (`route_chain` line/end_line) is credited to that route's handler, not the file.
+  `context_pack` and `impact` list the route as a caller, with the file:line of the
+  call. Confidence stays that of the underlying edge; the attribution is by range
+  (`inferred` where the range came from a parser, not from boot).
+- Test first: an anonymous handler at a boot-located range that calls a named helper
+  makes that route a caller of the helper, and removes the file-scope attribution.
+- Accept: `context_pack checkUserAuth` on the corpus lists `POST /api/v1/mail/send`;
+  file-scope SQL attributions in 41-kri-engine drop from 25 to a measured number, with
+  each remaining one explained.
+
+**CTX-S10b: SQL → columns** · G7 G8 · depends: S9, S10a
+- Change: parse column lists from INSERT/UPDATE/SELECT literals (`SELECT *` recorded
+  as "all columns", `inferred`); `endpoint_flow` and `context_pack` show tables and
+  columns on the path.
 - Test first: `POST /api/v1/po` in the engine writes `purchase_orders` with named
   columns, attributed to the route, not the file.
-- Accept: file-scope SQL attributions in 41-kri-engine drop from 25 to a measured
-  number, with each remaining one explained.
 
 **CTX-S11: API data models, route-level** · G9 · depends: S3 (FastAPI boot)
 - Change: FastAPI boot fills `routes.request_schema`/`response_schema` from
@@ -381,8 +394,10 @@ Template: **Gap** (fact) · **Change** · **Test first** · **Accept** (measured
   - Correlated changes lists the comment-only test commit.
   - At least one `REQUESTS` edge is promoted to `observed`, which also closes plan v2
     Phase 2's criterion 4.
+  - The live branch of the `PROCUREMENT_BASE_URL` fork is shown by which of its
+    candidate edges is observed (§4.2).
 
-**CTX-S15: Web UI: errors, tables, frontend lane** · G6 G7 · depends: S10, S12, S13
+**CTX-S15: Web UI: errors, tables, frontend lane** · G6 G7 · depends: S10b, S12, S13
 - Change: a UI error view (the three sections); datastore/column nodes on flows; a
   frontend swim-lane with its REQUESTS edges.
 - Accept: `tests/ui.test.ts` covers the new JSON; a manual check of `POST /api/v1/po`
@@ -433,7 +448,7 @@ Each will follow R72: no node kind or table until its extractor lands in the sam
 ```
 Wave 0   S1 ─────────────────────────────────────────────── (this task)
 Wave 1   S2   S3   S5   S6   S7   S9   S12        ← file-disjoint, parallel agents
-Wave 2   S4*  S8   S10  S11  S13                  (* needs your one sudo command)
+Wave 2   S4*  S8   S10a S10b S11  S13                 (* needs your one sudo command)
 Wave 3   S14  S15
 Wave 4   S16  → S17 when a syf-* path is given     L1–L3 whenever scheduled
 ```
@@ -445,7 +460,7 @@ Wave 4   S16  → S17 when a syf-* path is given     L1–L3 whenever scheduled
   typecheck, tests and Jev gate. Integration is by cherry-pick onto
   `feat/workflow-context-slices`, in the wave order above.
 - **Critical path to "Claude gets the whole workflow cheaply":**
-  S1 → S2 → S3 → S10 → S12 → S16.
+  S1 → S2 → S3 → S10a → S12 → S16.
 
 ---
 
