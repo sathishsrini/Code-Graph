@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "code-intel": {
+      "command": "node",
+      "args": ["D:/CodeGraph/src/cli.ts", "mcp", "--db", "D:/CodeGraph/.codeintel/graph.db"]
+    }
+  }
+}

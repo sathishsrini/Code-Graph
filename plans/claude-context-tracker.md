@@ -87,7 +87,7 @@ command turns it red (restored from git afterwards).
 | CTX-S13 | Errors over MCP (`error_trace`: origin + correlated changes) | 2 | — | ⏳ | — |
 | CTX-S14 | OTel end to end on the corpus | 3 | S3, S5, S13 | ⏳ | — |
 | CTX-S15 | Web UI: errors, tables, frontend lane | 3 | S10, S12, S13 | ⏳ | — |
-| CTX-S16 | Live A/B, 3 questions × 1 run | 4 | S1, S2, lanes A–D | ⏳ | — |
+| CTX-S16 | Live A/B, 3 questions × 1 run | 4 | S1, S2, lanes A–D | 🔄 kit ready (`docs/ab-token-check.md`: prompts, source-based answer keys, isolated arm configs, summariser); not run yet. A run today measures the *current* graph, before the waves that fill its gaps | — |
 | CTX-S17 | Onboard the first `syf-*` service | 4 | S1–S16 | ⛔ needs the `syf-*` path | — |
 | CTX-L1 | Containers and deploy (Docker, compose, k8s) | later | — | 🗓 | — |
 | CTX-L2 | Cloud IaC (Terraform) | later | — | 🗓 | — |

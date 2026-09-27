@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "node \"D:/CodeGraph/src/integrations/claude-hook.ts\" --config \"D:/CodeGraph/config/repos.json\"", "timeout": 10 } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Read|Grep|Glob", "hooks": [ { "type": "command", "command": "node \"D:/CodeGraph/src/integrations/claude-hook.ts\" --config \"D:/CodeGraph/config/repos.json\"", "timeout": 10 } ] }
+    ]
+  }
+}
