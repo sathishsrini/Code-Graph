@@ -109,7 +109,7 @@ Progress: **0 of 17 slices done** · 1 awaiting your review (S1) · 14 not start
 | **Now** | **`main` branch:** keep it tracking `codegraph-upstream/main` (the Rust CodeGraph project), or repoint it to `origin/main` (`4cf32e9`, this project) | The two histories share no commits, so repointing replaces the branch. Not done without your word |
 | **Now** | **A/B numbers:** run `node docs/ab/summarize.mjs D:/CodeGraph/.codeintel/ab/q*-*.jsonl` and paste the table into M11 | The comparison was done in another session; its numbers are only in your logs |
 | **Now** | **Draft plan v2:** answer its questions 6–8 (§9) and approve it: [`claude-context-remaining.md`](claude-context-remaining.md) | No new slice starts before your approval |
-| **Now** | **Merge decision:** S2 (`974d0e5`), S9 (`d6d207e`), S10a (`949335f`) are done in agent worktrees; cherry-picking them was blocked by the session's permission check | Allow `git cherry-pick`, or merge them yourself |
+| **Now** | **Merge decision:** S2 (`974d0e5`), S9 (`d6d207e`), S10a (`949335f`), S12 (`d2d14f6`) are done in agent worktrees; cherry-picking them was blocked by the session's permission check | Allow `git cherry-pick`, or merge them yourself |
 | When ready | **Python packages** for S3 and S22 (commands in the draft plan, §3 S22) | You said you will install them |
 | At S4 | Run once in Ubuntu-24.04: `sudo apt install -y python3-pip python3-venv nodejs npm` | `sudo` needs your password |
 | At S4, step 0 | Possibly a decision: keep WSL, or use a Windows-only fix if the diagnostic finds one | `5f9b525` got Python symbols on Windows while today's corpus run failed. The route won't be switched without asking |

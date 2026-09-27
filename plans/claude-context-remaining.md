@@ -46,8 +46,7 @@ The five outcomes map onto the goal's requirements as follows:
 | S1 | Code in, installed on your machine, headless acceptance passed. Open: VS Code panel check and your sign-off |
 | S16 | Kit in `docs/ab-token-check.md`. First answers recorded as M11; the token numbers are not transferred yet |
 | F1, F2, S6, S7, S13 | **Integrated** on the branch (`ec7099a`, `c164cab`, `ce5bfeb`, `f063ae8`, `246743e`). Suite 612/612 on Linux |
-| S2 (gate code), S9, S10a | **Done in agent worktrees** (`974d0e5`, `d6d207e`, `949335f`). Merging them was **blocked by the session's permission check** ("untrusted code integration"). Your decision (§9) |
-| S12 | Running as a parallel agent in a worktree |
+| S2 (gate code), S9, S10a, S12 | **Done in agent worktrees** (`974d0e5`, `d6d207e`, `949335f`, `d2d14f6`). Merging them was **blocked by the session's permission check** ("untrusted code integration"). Your decision (§9 Q8). S12 also fixes an existing false edge: a template `/api/v1/po/${id}` no longer matches `GET /api/v1/po` |
 | S3, S4, S5, S8, S10b, S11, S14, S15, S17, L1–L3 | Planned, not started |
 
 ---
@@ -357,5 +356,5 @@ Q1, Q2, Q4 and Q5 are answered (§0). What is left:
    the answer lives in (what Claude reads without the graph; recommended, since it is
    the goal's wording), or only the **cited lines** (S2's current golden)?
 8. **Merging agent-built slices.** The session's permission check blocked cherry-picking
-   S2, S9 and S10a from their worktrees. Either allow it (a Bash permission rule for
+   S2, S9, S10a and S12 from their worktrees. Either allow it (a Bash permission rule for
    `git cherry-pick`), or review and merge those commits yourself.
