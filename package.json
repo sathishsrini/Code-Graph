@@ -19,7 +19,8 @@
     "db:bootstrap": "node src/cli.ts db bootstrap",
     "db:reset": "node src/cli.ts db bootstrap --reset",
     "postinstall": "node scripts/patch-scip-python.mjs",
-    "index": "node src/cli.ts index"
+    "index": "node src/cli.ts index",
+    "jev:verify": "node --env-file-if-exists=.env scripts/verify-jev.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
@@ -38,6 +39,7 @@
     "web-tree-sitter": "^0.25.10"
   },
   "dependencies": {
-    "@huggingface/transformers": "^4.2.0"
+    "@huggingface/transformers": "^4.2.0",
+    "@typesafe-ai/sdk": "^0.6.0"
   }
 }

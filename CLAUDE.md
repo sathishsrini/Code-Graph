@@ -133,5 +133,28 @@ Details and the failure modes behind each: `.claude/COMMON_MISTAKES.md`
 
 ---
 
+## Environment Files
+
+**Never read `.env` files** or any file holding environment variables or secrets,
+even when one is open in the IDE. `.claudeignore` already excludes `.env*` (except
+`.env.example`). For setup questions, ask the user, point at the code that reads
+the variable, or edit `.env.example`. Never touch the real values.
+
+---
+
+## Jev / TypeSafe AI
+
+The repo-root `.env` holds `jev-key`, the API key for TypeSafe's Jev model (typed
+judgments: noul / choice / score, not text generation).
+
+- Client: `src/llm/jev-client.ts`. `createJevClient()` passes `jev-key` explicitly;
+  the SDK's default `TYPESAFE_API_KEY` is not used in this repo.
+- Check the key: `npm run jev:verify` (one real request, not part of `npm test`).
+- Docs: https://docs.typesafe.ai/llms.txt. Read them before adding question types
+  or SDK calls; never invent request or response fields.
+- Jev output is model output, so R62/R63 apply (COMMON_MISTAKES #4).
+
+---
+
 **Last Updated**: 2026-09-06
 **Optimized with**: [Claude Token Optimizer](https://github.com/nadimtuhin/claude-token-optimizer)
