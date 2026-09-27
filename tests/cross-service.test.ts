@@ -26,7 +26,7 @@ function repo(overrides: Partial<RepoConfig> = {}): RepoConfig {
 function findings(overrides: Partial<FileFindings> = {}): FileFindings {
   return {
     path: "server.js", throws: [], configs: [], datastores: [],
-    https: [], urls: [], envBindings: [], functions: [], parseErrors: 0, ...overrides,
+    https: [], urls: [], envBindings: [], functions: [], calls: [], parseErrors: 0, ...overrides,
   };
 }
 

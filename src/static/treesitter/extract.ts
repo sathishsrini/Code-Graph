@@ -86,6 +86,13 @@ export interface UrlExpr extends Located {
   literalPath: string;
   /** True when any segment is an expression. `req.url` makes the whole path unknown. */
   dynamic: boolean;
+  /**
+   * CTX-S12. The identifier that ends a base URL, when it is the whole rest of
+   * the URL: `path` in `` `${BASE}${path}` ``. If it is a parameter of the
+   * enclosing function, that function is a URL wrapper and the linker reads
+   * the path from its callers' arguments instead. Unset otherwise.
+   */
+  pathVar?: string | null;
 }
 
 export interface HttpFinding extends Located {
@@ -100,6 +107,19 @@ export interface HttpFinding extends Located {
    * The URL is then built elsewhere, and the linker must look for it there.
    */
   configVar: string | null;
+  /**
+   * CTX-S12. The identifier passed on as the call's options: `init` in
+   * `fetch(url, init)` or `fetch(url, { ...init, headers })`. It is how a
+   * caller's `{ method: "POST" }` reaches the request.
+   */
+  optionsVar?: string | null;
+  /** CTX-S12. A `method` key whose value is not a literal (`{ method }`, `method: m`). */
+  methodDynamic?: boolean;
+  /**
+   * CTX-S12. The options (or a whole request config, `fetch(req)`) come from
+   * an expression the linker does not follow, so no default method is safe.
+   */
+  optionsOpaque?: boolean;
 }
 
 /**
@@ -131,6 +151,48 @@ export interface FunctionRange extends Located {
   /** `function` | `arrow` | `method` | `async` variants collapse into these. */
   form: "function" | "arrow" | "method";
   bodyStartLine: number;
+  /**
+   * CTX-S12. Parameter names in order (JS/TS). A destructured or rest
+   * parameter keeps its position as "" so argument indexes stay aligned.
+   */
+  params?: string[];
+  /**
+   * CTX-S12. Where the name is. The SCIP definition occurrence at this
+   * position is the function's identity; the name itself never is (R4).
+   */
+  nameAt?: { line: number; col: number };
+}
+
+// ---------------------------------------------------------------------------
+// CTX-S12: call sites, for tracing a URL wrapper's path to its callers
+// ---------------------------------------------------------------------------
+// `60-kri-next/lib/api.ts` calls `fetch(`${BASE}${path}`)` with `path` passed
+// in by callers across app/ and components/. Which calls are calls *of that
+// wrapper* is not decidable here: the wrapper lives in another file, and a
+// name is not an identity (COMMON_MISTAKES #2, #3). So every call records its
+// callee's position and its arguments' shapes, and the linker asks SCIP which
+// symbol each callee is. Recorded for JS/TS only.
+
+/** One argument, reduced to what path and method tracing need. */
+export type CallArg =
+  | { kind: "string"; text: string; raw: string }
+  /** A template with a substitution: only the text before it is known. */
+  | { kind: "template"; literalPrefix: string; raw: string }
+  | { kind: "identifier"; name: string; raw: string }
+  /**
+   * An object literal, read for the one key that matters: `method`.
+   * `spreads` lists spread identifiers ("" for a non-identifier spread),
+   * since a spread may carry a method the literal does not show.
+   */
+  | { kind: "object"; method: string | null; methodDynamic: boolean; spreads: string[]; raw: string }
+  | { kind: "other"; raw: string };
+
+export interface CallSite extends Located {
+  /** The callee as written, for display: `apiFetch`, `api.post`. */
+  callee: string;
+  /** The callee's final name (`post` in `api.post`); the SCIP lookup key. */
+  calleeAt: { line: number; col: number };
+  args: CallArg[];
 }
 
 export interface FileFindings {
@@ -142,6 +204,8 @@ export interface FileFindings {
   urls: UrlExpr[];
   envBindings: EnvBinding[];
   functions: FunctionRange[];
+  /** CTX-S12. Calls with at least one argument (JS/TS). */
+  calls: CallSite[];
   /** Parse errors seen. A file that failed to parse yields findings, not silence. */
   parseErrors: number;
 }
@@ -248,6 +312,8 @@ export function readUrlExpression(node: Node): UrlExpr | null {
   let literalPath = "";
   let dynamic = false;
   let seenAnything = false;
+  // CTX-S12: the first dynamic segment, while nothing has followed it.
+  let pathVar: string | null = null;
 
   for (let i = 0; i < node.namedChildCount; i += 1) {
     const child = node.namedChild(i)!;
@@ -260,12 +326,14 @@ export function readUrlExpression(node: Node): UrlExpr | null {
         seenAnything = true;
         continue;
       }
+      pathVar = !dynamic && expr?.type === "identifier" ? expr.text : null;
       dynamic = true;
       seenAnything = true;
       continue;
     }
     // string_fragment (and escape_sequence, which we take verbatim)
     if (!dynamic) literalPath += child.text;
+    else pathVar = null;
     seenAnything = true;
   }
 
@@ -276,7 +344,12 @@ export function readUrlExpression(node: Node): UrlExpr | null {
     // is a log message. What follows a base URL is a path or nothing.
     return null;
   }
-  return { ...pos, raw: node.text, baseVar, literalPath, dynamic };
+  // Only a base-relative wrapper (`${BASE}${path}`) is traced: the env binding
+  // is what names its destination.
+  return {
+    ...pos, raw: node.text, baseVar, literalPath, dynamic,
+    ...(baseVar !== null && pathVar !== null ? { pathVar } : {}),
+  };
 }
 
 function isPathRemainder(text: string): boolean {
@@ -365,6 +438,8 @@ function extractJs(file: ParsedFile): FileFindings {
       case "call_expression": {
         const http = jsHttpCall(node);
         if (http) out.https.push(http);
+        const call = jsCallSite(node);
+        if (call) out.calls.push(call);
         break;
       }
 
@@ -378,23 +453,102 @@ function extractJs(file: ParsedFile): FileFindings {
 }
 
 function jsFunctionRange(node: Node): FunctionRange {
-  const nameNode = node.childForFieldName("name");
-  let name = nameNode?.text ?? null;
-  if (!name) {
+  let nameNode = node.childForFieldName("name");
+  if (!nameNode?.text) {
     // `const forward = async (...) => {}` and `{ handler: () => {} }` both put
     // the only usable name on the parent.
     const parent = node.parent;
-    if (parent?.type === "variable_declarator") name = parent.childForFieldName("name")?.text ?? null;
-    else if (parent?.type === "pair") name = parent.childForFieldName("key")?.text ?? null;
+    if (parent?.type === "variable_declarator") nameNode = parent.childForFieldName("name");
+    else if (parent?.type === "pair") nameNode = parent.childForFieldName("key");
   }
   const body = node.childForFieldName("body");
   return {
     ...located(node),
-    name,
+    name: nameNode?.text || null,
     form: node.type === "arrow_function" ? "arrow"
       : node.type === "method_definition" ? "method" : "function",
     bodyStartLine: body ? lineOf(body) : lineOf(node),
+    params: jsParams(node),
+    ...(nameNode ? { nameAt: { line: lineOf(nameNode), col: colOf(nameNode) } } : {}),
   };
+}
+
+/** CTX-S12. Parameter names in order; "" holds a destructured or rest slot. */
+function jsParams(node: Node): string[] {
+  const list = node.childForFieldName("parameters");
+  if (!list) {
+    const single = node.childForFieldName("parameter");   // `p => …`
+    return single?.type === "identifier" ? [single.text] : [];
+  }
+  const out: string[] = [];
+  for (const p of list.namedChildren) {
+    if (!p || p.type === "comment") continue;
+    // TypeScript wraps every parameter, typed or not, and keeps the name in
+    // `pattern`; plain JavaScript does not wrap.
+    const inner = p.type === "required_parameter" || p.type === "optional_parameter"
+      ? p.childForFieldName("pattern") : p;
+    if (inner?.type === "this") continue;                // `this: T` is not positional
+    const named = inner?.type === "assignment_pattern" ? inner.childForFieldName("left") : inner;
+    out.push(named?.type === "identifier" ? named.text : "");
+  }
+  return out;
+}
+
+/**
+ * CTX-S12. A call with arguments, for the linker's wrapper tracing. The
+ * callee must be a name (`f(…)`) or a member (`api.post(…)`); anything else
+ * has no position SCIP could name.
+ */
+function jsCallSite(node: Node): CallSite | null {
+  const fn = node.childForFieldName("function");
+  const args = node.childForFieldName("arguments");
+  // A tagged template's `arguments` is the template itself, not a list.
+  if (!fn || args?.type !== "arguments" || args.namedChildCount === 0) return null;
+  const nameNode = fn.type === "identifier" ? fn
+    : fn.type === "member_expression" ? fn.childForFieldName("property") : null;
+  if (!nameNode) return null;
+  return {
+    ...located(node),
+    callee: oneLine(fn.text, 80),
+    calleeAt: { line: lineOf(nameNode), col: colOf(nameNode) },
+    args: args.namedChildren.filter((a): a is Node => a !== null && a.type !== "comment").map(jsCallArg),
+  };
+}
+
+function jsCallArg(arg: Node): CallArg {
+  const raw = oneLine(arg.text, 80);
+  if (arg.type === "string") return { kind: "string", text: literalText(arg), raw };
+  if (arg.type === "identifier") return { kind: "identifier", name: arg.text, raw };
+  if (arg.type === "template_string") {
+    let prefix = "";
+    for (const child of arg.namedChildren) {
+      if (child?.type === "template_substitution") return { kind: "template", literalPrefix: prefix, raw };
+      prefix += child?.text ?? "";
+    }
+    return { kind: "string", text: prefix, raw };       // `…` with no substitution
+  }
+  if (arg.type === "object") {
+    let method: string | null = null;
+    let methodDynamic = false;
+    const spreads: string[] = [];
+    for (const member of arg.namedChildren) {
+      if (member?.type === "pair") {
+        const key = member.childForFieldName("key");
+        const value = member.childForFieldName("value");
+        if (key && stripQuotes(key.text) === "method") {
+          if (value?.type === "string") method = literalText(value).toUpperCase();
+          else methodDynamic = true;
+        }
+      } else if (member?.type === "shorthand_property_identifier" && member.text === "method") {
+        methodDynamic = true;
+      } else if (member?.type === "spread_element") {
+        const spread = member.namedChild(0);
+        spreads.push(spread?.type === "identifier" ? spread.text : "");
+      }
+    }
+    return { kind: "object", method, methodDynamic, spreads, raw };
+  }
+  return { kind: "other", raw };
 }
 
 /** `const X = process.env.X || 'http://…'` — the base-URL binding P1-T7 needs. */
@@ -455,6 +609,15 @@ function jsHttpCall(node: Node): HttpFinding | null {
   const args = node.childForFieldName("arguments");
   const urls: UrlExpr[] = [];
   let configVar: string | null = null;
+  let optionsVar: string | null = null;
+  let methodDynamic = false;
+  let optionsOpaque = false;
+  // CTX-S12: where a plain call's options sit — `axios({ … })` takes one
+  // config object, `fetch(url, init)` / `axios(url, config)` take them second.
+  // A member call (`axios.post(url, data, config)`) states its method in its
+  // name, and its argument order varies, so its options are not read.
+  const optionsAt = fn.type !== "identifier" ? -1
+    : args?.namedChild(0)?.type === "object" ? 0 : 1;
 
   if (args) {
     for (let i = 0; i < args.namedChildCount; i += 1) {
@@ -465,6 +628,19 @@ function jsHttpCall(node: Node): HttpFinding | null {
         // resolvable at all.
         configVar = arg.text;
         continue;
+      }
+      if (i === optionsAt) {
+        // CTX-S12: `fetch(url, init)` / `fetch(url, { ...init, headers })`.
+        // The options' own members only: a `method` inside a nested body is
+        // not the request's.
+        const own = jsCallArg(arg);
+        if (own.kind === "identifier") optionsVar = own.name;
+        else if (own.kind !== "object") optionsOpaque = true;
+        else {
+          methodDynamic = own.methodDynamic;
+          if (own.spreads.length === 1 && own.spreads[0] !== "") optionsVar = own.spreads[0]!;
+          else if (own.spreads.length > 0) optionsOpaque = true;
+        }
       }
       walk(arg, (inner) => {
         const url = readUrlExpression(inner);
@@ -481,7 +657,10 @@ function jsHttpCall(node: Node): HttpFinding | null {
     }
   }
 
-  return { ...located(node), client, method, urls, configVar };
+  // `fetch(req)` / `axios(config)`: the method is inside what the identifier holds.
+  if (configVar !== null && optionsAt === 1 && (args?.namedChildCount ?? 0) < 2) optionsOpaque = true;
+
+  return { ...located(node), client, method, urls, configVar, optionsVar, methodDynamic, optionsOpaque };
 }
 
 // -- Python -----------------------------------------------------------------
@@ -657,7 +836,7 @@ function pyHttpCall(node: Node, fn: Node, args: Node | null): HttpFinding | null
 function emptyFindings(path: string): FileFindings {
   return {
     path, throws: [], configs: [], datastores: [], https: [],
-    urls: [], envBindings: [], functions: [], parseErrors: 0,
+    urls: [], envBindings: [], functions: [], calls: [], parseErrors: 0,
   };
 }
 

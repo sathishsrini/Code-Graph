@@ -52,7 +52,9 @@ import {
   STATIC_EVIDENCE, type ChangeSet,
 } from "./incremental.ts";
 import { displayNameOf, symbolKind } from "../static/scip/symbol.ts";
-import { resolveCrossService, type RouteTarget } from "../derive/cross-service.ts";
+import {
+  collectPathWrappers, resolveCrossService, scipSymbolLookup, type RouteTarget,
+} from "../derive/cross-service.ts";
 import { callSiteOwner } from "../static/treesitter/ingest.ts";
 import { extractDdl, isDdlFile } from "../static/ddl.ts";
 import { ingestDdl, type DdlCounts } from "../static/ddl-ingest.ts";
@@ -331,6 +333,15 @@ export async function linkCrossServiceRepos(options: {
     const index = existsSync(scipPath) ? new ScipProtobufReader().read(scipPath) : null;
     const ranges = index ? buildDefinitionRanges(index) : [];
 
+    // CTX-S12: every file's findings first. A wrapper in lib/api.ts is only
+    // resolvable at its callers in other files, so they must all be known
+    // before any one file is linked.
+    const repoFiles: Array<{
+      file: ReturnType<typeof enumerateFiles>[number];
+      fileRow: NonNullable<ReturnType<FactStore["getFile"]>>;
+      text: string;
+      findings: FileFindings;
+    }> = [];
     for (const file of enumerateFiles(repo)) {
       if (!grammarFor(file.relativePath)) continue;
       const fileRow = options.store.getFile(repoId, file.relativePath);
@@ -342,9 +353,15 @@ export async function linkCrossServiceRepos(options: {
       const text = readFileSync(file.absolutePath, "utf8");
       const parsed = await parseFile(file.relativePath, text);
       if (!parsed) continue;
-      const findings = extract(parsed);
+      repoFiles.push({ file, fileRow, text, findings: extract(parsed) });
+    }
+    const wrappers = collectPathWrappers(
+      repoFiles.map((f) => f.findings), index ? scipSymbolLookup(index) : null,
+    );
+
+    for (const { file, fileRow, text, findings } of repoFiles) {
       const resolved = resolveCrossService({
-        repo, findings, targets, repos: options.repos, source: text,
+        repo, findings, targets, repos: options.repos, source: text, wrappers,
       });
 
       for (const link of resolved.requests) {
