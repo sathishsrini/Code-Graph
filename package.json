@@ -21,7 +21,10 @@
     "postinstall": "node scripts/patch-scip-python.mjs",
     "index": "node src/cli.ts index",
     "jev:verify": "node --env-file-if-exists=.env scripts/verify-jev.mjs",
-    "bench:workflow": "node scripts/workflow-bench.ts"
+    "bench:workflow": "node scripts/workflow-bench.ts",
+    "claude:install": "node scripts/claude-integration.ts install",
+    "claude:uninstall": "node scripts/claude-integration.ts uninstall",
+    "claude:status": "node scripts/claude-integration.ts status"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

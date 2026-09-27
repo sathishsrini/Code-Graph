@@ -12,28 +12,55 @@ in its commit, and move "Current step" forward.
 
 ## Current step
 
-**CTX-S1: Connect Claude Code** is in progress.
+**CTX-S1: Connect Claude Code** has its code done and pushed. It stays 🔄 until its
+acceptance runs on your machine (steps 5–6). The code was built in a cloud container,
+which has no corpus, no `jev-key` and none of your Claude config, so nothing there
+could stand in for your `~/.claude`.
 
 | Step | State |
 |---|---|
-| 1. Write failing tests: `tests/claude-integration.test.ts` | ✅ written, red as intended (`ERR_MODULE_NOT_FOUND`). **Local only, not committed**, because a red test would break the branch's suite |
-| 2. `src/integrations/claude-hook.ts`: SessionStart instruction + one PreToolUse reminder per session, only in folders listed in `config/repos.json`, never blocks | ⏳ next |
-| 3. `scripts/claude-integration.ts install\|uninstall\|status` + `npm run claude:install`: backs up and merges `~/.claude/settings.json`, runs `claude mcp add --scope user code-intel …` | ⏳ |
-| 4. Tests green, `npm run typecheck`, full `npm test` | ⏳ |
-| 5. Run the installer (changes your user-level Claude config, approved) | ⏳ |
-| 6. Headless `claude -p` from `dev-workspace`: at least one `mcp__code-intel__*` call; record Read count and tokens | ⏳ |
-| 7. `jev_gate`, commit `feat(CTX-S1): …`, update this tracker, push | ⏳ |
+| 1. Write failing tests: `tests/claude-integration.test.ts` | ✅ red first (`ERR_MODULE_NOT_FOUND`), then 38/38 green. Committed; it replaces your local red copy (see "Local state") |
+| 2. Hook: `src/integrations/claude-hook.ts` (entrypoint, I/O only) + `claude-steering.ts` (logic). SessionStart instruction + one PreToolUse reminder per session, only in folders listed in `config/repos.json`, never blocks | ✅ Plain-text SessionStart; PreToolUse `hookSpecificOutput.additionalContext` only, never a permission decision; every failure → exit 0, silent. Once-per-session = `wx` marker per session id in `%TEMP%/code-intel-claude-hook` |
+| 3. `scripts/claude-integration.ts install\|uninstall\|status` + `npm run claude:install` (also `claude:uninstall`, `claude:status`); merge logic in `src/integrations/claude-settings.ts` | ✅ Backs up `settings.json` before any change; skips the write when nothing changes; refuses a file that does not parse; temp-file + rename. MCP: `claude mcp remove` then `add --scope user code-intel -- node <abs>/src/cli.ts mcp --db <abs>/.codeintel/graph.db` |
+| 4. Tests green, `npm run typecheck`, full `npm test` | ✅ typecheck clean · 564 tests, 559 pass. The 5 failures predate S1 and happen only on Linux (see "Found during S1") |
+| 5. Run the installer (changes your user-level Claude config, approved) | ⏳ **on your machine**: `npm run claude:install`, then `claude mcp list` should show `code-intel … ✓ Connected` |
+| 6. Headless `claude -p` from `dev-workspace`: at least one `mcp__code-intel__*` call; record Read count and tokens | ⏳ **on your machine**, command below |
+| 7. `jev_gate`, commit `feat(CTX-S1): …`, update this tracker, push | ✅ commit, tracker, push · ⏳ `jev_gate` (needs `jev-key`, which is not in the container) |
 
-**Waiting on you:** a go-ahead to continue S1 (asked 2026-09-27).
+**Proven in the container, with a throwaway `HOME`** (your config was not involved):
+install → `claude mcp list` showed `code-intel: node …/src/cli.ts mcp --db … - √ Connected`;
+the hook command, run through bash exactly as written in `settings.json`, printed the
+instruction on SessionStart, the reminder on the first Grep, and nothing on the second
+Grep, on garbage stdin, or in a folder that is not indexed. It exited 0 every time.
+`uninstall` restored `settings.json` exactly and removed the server.
 
----
+**Measured cost** (bytes / 4): instruction **159 tokens** with the 4 corpus services,
+reminder **82 tokens**, so at most ≈241 tokens per session. The tool list is unchanged
+(≈1,165). Hook latency is ≈145 ms per Read/Grep/Glob call in the container, almost all
+of it Node start-up.
+
+**Step 6 command** (Git Bash, from `D:/###facilitator/dev-workspace`, after the graph
+is built):
+
+```bash
+claude -p "What runs when POST /api/v1/po is called on 40-kri-router? List the auth checks in order." \
+  --output-format stream-json --verbose --include-hook-events > s1-headless.jsonl
+grep -o '"name":"mcp__code-intel__[a-z_]*"' s1-headless.jsonl | sort | uniq -c   # accept: ≥ 1
+grep -c '"name":"Read"' s1-headless.jsonl                                       # record
+grep -c 'code-intel: this folder is indexed' s1-headless.jsonl                  # instruction delivered: ≥ 1
+tail -n 1 s1-headless.jsonl                                                     # usage totals: record
+```
+
+**Waiting on you:** steps 5–6 on your machine, and `jev_gate` on this commit with the
+step 6 log as evidence. S2 comes next in the plan's order ("run first after S1", the
+baseline before other slices), and it needs the corpus.
 
 ## All slices
 
 | Slice | What | Wave | Depends on | State | Commit |
 |---|---|---|---|---|---|
 | CTX (docs) | `goal.md`, the plan, `CLAUDE.md` link and status | — | — | ✅ done, pushed | `61ecce8` |
-| **CTX-S1** | Connect Claude Code: user MCP + steering + headless check | 0 | — | 🔄 in progress | — |
+| **CTX-S1** | Connect Claude Code: user MCP + steering + headless check | 0 | — | 🔄 code done; install + headless check on your machine | `feat(CTX-S1)` on this branch |
 | CTX-S2 | Corpus benchmark and gate (baseline before other slices) | 1 | — | ⏳ | — |
 | CTX-S3 | Restore the Python service's routes (install venv requirements, boot) | 1 | — | ⏳ | — |
 | CTX-S4 | Python call tree through WSL Ubuntu-24.04 | 2 | your `sudo apt install` | ⏳ | — |
@@ -54,7 +81,7 @@ in its commit, and move "Current step" forward.
 | CTX-L2 | Cloud IaC (Terraform) | later | — | 🗓 | — |
 | CTX-L3 | Messaging (producer → topic → consumer) | later | — | 🗓 | — |
 
-Progress: **0 of 17 slices done** (docs commit not counted) · 1 in progress · 1 blocked · 3 later.
+Progress: **0 of 17 slices done** (docs commit not counted) · 1 in progress (S1: code done, acceptance pending) · 1 blocked · 3 later.
 
 ---
 
@@ -62,7 +89,7 @@ Progress: **0 of 17 slices done** (docs commit not counted) · 1 in progress · 
 
 | When | What | Why |
 |---|---|---|
-| Now | Go-ahead to continue S1 | It changes your user-level Claude config |
+| Now | S1 steps 5–6: `npm run claude:install`, then the headless run above; then `jev_gate` | It changes your user-level Claude config, and the corpus graph and `jev-key` are only on your machine |
 | At S4 | Run once in Ubuntu-24.04: `sudo apt install -y python3-pip python3-venv nodejs npm` | `sudo` needs your password |
 | At S4, step 0 | Possibly a decision: keep WSL, or use a Windows-only fix if the diagnostic finds one | `5f9b525` got Python symbols on Windows while today's corpus run failed. The route won't be switched without asking |
 | At S17 | The path to the `syf-*` repos, and which service to start with | Unknown today |
@@ -92,9 +119,22 @@ Progress: **0 of 17 slices done** (docs commit not counted) · 1 in progress · 
 - `.codeintel/graph.db`: the corpus graph built 2026-09-27 (gitignored). `scip index`
   ran for 3 repos; `boot dump` for 2 (`51-integration` failed); the search index is
   built (848 rows).
-- `tests/claude-integration.test.ts`: S1's tests, written and red, not committed.
-- Your `~/.claude/settings.json` and `~/.claude.json`: **untouched so far**.
+- `tests/claude-integration.test.ts` is **now committed**. If your red local copy is
+  still untracked, `git pull` will refuse to overwrite it. Delete it first; the
+  committed version supersedes it.
+- Your `~/.claude/settings.json` and `~/.claude.json`: **untouched so far**. S1 was built
+  in a cloud container and never touched them.
 - The corpus (`D:/###facilitator/dev-workspace`): **untouched so far**. The venv still
   has only `pip`, and no repo has git.
 - Four old worktrees under `.claude/worktrees/` (`slice/*` at `4cf32e9`) are left as
   they are. The commits that replaced them are on this branch.
+
+---
+
+## Found during S1 (not fixed, outside the slice)
+
+- **5 tests fail on Linux, so they would also fail on CI's `ubuntu-latest` runner.** `config/repos.json`
+  and `tests/next-indexing.test.ts` use `D:/…` rootPaths. `path.isAbsolute` rejects those
+  on POSIX, so `validateConfig` throws: `config.test.ts` › loadConfig (4 tests) and
+  `next-indexing.test.ts` (1). They pass on Windows, where the tracker's "526 pass" was
+  measured. This predates S1 and S1 does not touch it.
