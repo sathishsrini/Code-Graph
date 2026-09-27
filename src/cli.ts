@@ -7,7 +7,6 @@
 
 import { parseArgs } from "node:util";
 import { resolve, join } from "node:path";
-import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import {
   loadConfig, repoByName, ConfigError, type RepoConfig,
@@ -20,7 +19,7 @@ import {
 import { displayNameOf } from "./static/scip/symbol.ts";
 import { deriveCalls, dedupe, createFsSourceProvider } from "./derive/calls.ts";
 import { readBootDump, findRoute } from "./boot/dump.ts";
-import { readFastapiDump, toBootDump } from "./boot/fastapi.ts";
+import { bootUnsupported, runBootAdapter } from "./boot/run.ts";
 import { buildFlow, renderFlow } from "./query/flow.ts";
 import { endpointFlow, RouteNotFound, type EndpointFlow } from "./query/endpoint-flow.ts";
 import { renderEndpointFlow } from "./query/endpoint-flow-render.ts";
@@ -41,15 +40,14 @@ import { analysePr, renderPrComment } from "./ci/pr-impact.ts";
 import { startUi } from "./ui/server.ts";
 import { generateTraffic, corpusTargets } from "./runtime/traffic.ts";
 import { deriveCoChanged, peersOf } from "./derive/co-changed.ts";
-import {
-  runScipTypescript, runScipPython, documentAllowed,
-} from "./static/scip/runner.ts";
+import { runScipIndex, documentAllowed } from "./static/scip/runner.ts";
 import { scanRepo, renderScan } from "./static/treesitter/report.ts";
 import { indexRepo, linkCrossServiceRepos, type IndexReport } from "./index/pipeline.ts";
 import { readSummary } from "./llm/summaries.ts";
 import { planGeneration, generateFromPlan, type GenerationReport } from "./llm/orchestrate.ts";
 import { renderIndexReport } from "./index/report.ts";
 import { buildSearchIndex } from "./index/search.ts";
+import { buildGraph, renderBuildReport } from "./index/build.ts";
 import { search, type FollowQuery, type SearchCandidate } from "./query/workflow.ts";
 
 const BREAK = String.fromCharCode(10);
@@ -71,6 +69,8 @@ COMMANDS
   flow                Ordered chain + call tree for one endpoint (P1-T12)
   scan                tree-sitter pass: throws, http, datastores, config (P1-T6)
   index               Index every repo into the fact store, incrementally (P1-T11)
+  build               scip index + boot dump + index per repo, then search build;
+                      reports every channel, exits 1 if any failed (CTX-S6)
   impact <symbol>     What breaks if this changes — reverse closure (P1-T13)
   security            Coverage matrix + the writes-without-tenant anomaly (P1-T14)
   context <symbol>    Minimum context to edit this function, budgeted (P1-T15)
@@ -92,7 +92,7 @@ OPTIONS
   --db <path>         Database path            (default: ${DEFAULT_DB})
   --config <path>     Config path              (default: ${DEFAULT_CONFIG})
   --index <path>      scip dump: path to a .scip file
-  --repo <name>       boot dump / scip index / flow: repo from config/repos.json
+  --repo <name>       boot dump / scip index / build / flow: repo from config/repos.json
   --method <verb>     flow: HTTP method
   --path <url>        flow: route url as the framework reports it
   --depth <n>         flow: call tree depth cap    (default: 12)
@@ -284,6 +284,9 @@ async function main(argv: string[]): Promise<number> {
 
     case "index":
       return await cmdIndex(options);
+
+    case "build":
+      return await cmdBuild(options);
 
     case "impact":
       return cmdImpact(options, positionals[1] ?? "");
@@ -541,9 +544,7 @@ function cmdScipIndex(options: Options): number {
   if (typeof repo === "number") return repo;
 
   const out = options.out || defaultIndexPath(repo);
-  const result = repo.lang === "py"
-    ? runScipPython(repo, out)
-    : runScipTypescript(repo, out, { maxOldSpaceMb: 8192 });
+  const result = runScipIndex(repo, out);
 
   if (options.json) {
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
@@ -1388,6 +1389,50 @@ async function cmdIndex(options: Options): Promise<number> {
   }
 }
 
+/**
+ * Build every configured repo, or one with `--repo` (CTX-S6).
+ *
+ * `scip index` -> `boot dump` -> `index` per repo, then the cross-service link,
+ * `search build` and an integrity check over the store. The orchestration is
+ * `src/index/build.ts`; this only loads config and prints. Paths are checked
+ * per repo there, not here: one repo missing from disk is that repo's failure,
+ * not a reason to build nothing.
+ */
+async function cmdBuild(options: Options): Promise<number> {
+  let config;
+  try {
+    config = loadConfig(options.config, { checkPaths: false });
+  } catch (e) {
+    if (e instanceof ConfigError) {
+      process.stderr.write(`config error: ${e.message}\n`);
+      return 1;
+    }
+    throw e;
+  }
+  const repos = options.repo
+    ? config.repos.filter((r) => r.name === options.repo)
+    : config.repos;
+  if (repos.length === 0) {
+    process.stderr.write(`no repo named "${options.repo}" in ${options.config}\n`);
+    return 1;
+  }
+
+  const store = new FactStore(options.db);
+  try {
+    const artifactDir = resolve(".codeintel");
+    const report = await buildGraph({ store, repos, allRepos: config.repos, artifactDir });
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    } else {
+      process.stdout.write(`database : ${store.path}\nartifacts: ${artifactDir}\n\n`);
+      process.stdout.write(renderBuildReport(report));
+    }
+    return report.failures.length === 0 ? 0 : 1;
+  } finally {
+    store.close();
+  }
+}
+
 function cmdBootDump(options: Options): number {
   if (!options.repo) {
     process.stderr.write("boot dump requires --repo <name from config/repos.json>\n");
@@ -1408,58 +1453,22 @@ function cmdBootDump(options: Options): number {
     process.stderr.write(`no repo named "${options.repo}" in ${options.config}\n`);
     return 1;
   }
-  if (repo.framework !== "fastify" && repo.framework !== "fastapi") {
-    // Next.js route extraction is descoped by decision (plan P1-T5), so there
-    // is deliberately no adapter. Say which one is missing rather than
-    // emitting an empty dump, which reads as "this service has no routes".
-    process.stderr.write(
-      `boot dump: no adapter for framework "${repo.framework}" (repo ${repo.name}). ` +
-      `Fastify and FastAPI only.\n`,
-    );
-    return 2;
-  }
-  if (!repo.entrypoint) {
-    process.stderr.write(`boot dump: repo ${repo.name} declares no entrypoint\n`);
+  // Say which adapter is missing rather than emitting an empty dump, which
+  // reads as "this service has no routes".
+  const unsupported = bootUnsupported(repo);
+  if (unsupported) {
+    process.stderr.write(`boot dump: ${unsupported}\n`);
     return 2;
   }
 
   const out = options.out || join(".codeintel", "boot", `${repo.name}.json`);
-  const python = repo.framework === "fastapi";
-
-  // Both adapters run as a CHILD PROCESS on purpose: they import and boot a
-  // foreign application, which can throw, hang, open handles or call exit,
-  // and none of that should be able to take the CLI with it.
-  const adapter = resolve(
-    import.meta.dirname,
-    python ? "../adapters/fastapi/boot_dump.py" : "../adapters/fastify/boot-dump.cjs",
-  );
-  // OPEN-5: the indexing/boot interpreter is declared, not discovered. It does
-  // not have to match the one the service runs in production.
-  const runner = python ? (repo.pythonBin || "python") : process.execPath;
-  const result = spawnSync(runner, [
-    adapter,
-    "--entry", join(repo.rootPath, repo.entrypoint),
-    "--cwd", repo.rootPath,
-    "--service", repo.serviceName,
-    "--out", resolve(out),
-  ], { encoding: "utf8", timeout: 120_000 });
-
-  if (result.error) {
-    process.stderr.write(`boot dump: ${result.error.message}\n`);
-    return 1;
+  // A child process, shared with `build` (src/boot/run.ts, CTX-S6).
+  const run = runBootAdapter(repo, out);
+  if (!run.ok || !run.dump) {
+    process.stderr.write(run.error.endsWith("\n") ? run.error : `${run.error}\n`);
+    return run.status ?? 1;
   }
-  if (result.status !== 0) {
-    process.stderr.write(result.stderr || "boot dump: adapter failed\n");
-    return result.status ?? 1;
-  }
-
-  // One shape downstream. The frameworks differ — Fastify hooks are per-route
-  // and inheritable, Starlette middleware is app-wide — and `src/boot/fastapi.ts`
-  // preserves that difference in `origin` and `inheritedFrom` rather than
-  // flattening it into "hooks".
-  const dump = python
-    ? toBootDump(readFastapiDump(resolve(out)))
-    : readBootDump(resolve(out));
+  const dump = run.dump;
   if (options.json) {
     process.stdout.write(JSON.stringify(dump, null, 2) + "\n");
     return 0;

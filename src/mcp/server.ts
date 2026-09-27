@@ -36,6 +36,7 @@ import { securityPath } from "../query/security.ts";
 import { contextPack, packToToon, measureTokenDelta } from "../query/context-pack.ts";
 import { errorPaths, type ErrorReport } from "../query/errors.ts";
 import { encodeToon } from "../serializers/toon.ts";
+import { checkFreshness, freshnessLine } from "../index/freshness.ts";
 
 const CONFIDENCE_NOTE =
   "Every edge carries a confidence: 'certain' (the compiler resolved it), " +
@@ -180,8 +181,19 @@ const bool = (a: Args, k: string): boolean | undefined =>
  * Exported and store-injected so the tools can be tested without a transport.
  * An MCP server whose logic is only reachable through stdio is a server nobody
  * writes a test for.
+ *
+ * CTX-S6: every answer, a miss and an unknown tool included, ends with one
+ * `freshness` line: when the graph was built and which indexed files changed
+ * since. It is added here, once, not per tool, so an edit made after the
+ * build is never answered about silently. Cost: one hash per indexed file.
  */
 export function callTool(store: FactStore, name: string, args: Args): string {
+  const answer = runTool(store, name, args).replace(/\n*$/, "\n");
+  return `${answer}${encodeToon({ freshness: freshnessLine(checkFreshness(store)) })}\n`;
+}
+
+/** The tools themselves; `callTool` adds the freshness line. */
+function runTool(store: FactStore, name: string, args: Args): string {
   switch (name) {
     case "endpoint_flow": {
       try {

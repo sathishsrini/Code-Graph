@@ -249,6 +249,18 @@ export function runScipPython(
   };
 }
 
+/**
+ * The indexer for this repo's language, as `scip index` runs it.
+ *
+ * One dispatch, shared by the `scip index` command and `build` (CTX-S6), so
+ * the two cannot drift apart on which indexer or which heap a repo gets.
+ */
+export function runScipIndex(repo: RepoConfig, outputPath: string): IndexResult {
+  return repo.lang === "py"
+    ? runScipPython(repo, outputPath)
+    : runScipTypescript(repo, outputPath, { maxOldSpaceMb: 8192 });
+}
+
 /** This project's own `node_modules/.bin`, for spawns that run in another cwd. */
 function localBinDir(): string | null {
   const dir = resolve(dirname(fileURLToPath(import.meta.url)), "../../../node_modules/.bin");

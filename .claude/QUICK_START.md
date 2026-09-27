@@ -20,7 +20,12 @@ no enums, no parameter properties, no namespaces.
 ```bash
 node src/cli.ts db bootstrap            # create .codeintel/graph.db (WAL, FK on)
 node src/cli.ts db bootstrap --reset    # drop and recreate
-node src/cli.ts index --config config/repos.json
+node src/cli.ts build --config config/repos.json   # scip index + boot dump + index
+                                        # per repo, then search build (CTX-S6).
+                                        # Prints ok/failed/skipped per channel;
+                                        # exits 1 if any failed. --repo <name>
+                                        # builds one. Artifacts: ./.codeintel/
+node src/cli.ts index --config config/repos.json   # re-index only, from existing artifacts
 node src/cli.ts flow --service 40-kri-router --method POST --path /api/v1/po
 node src/cli.ts context <symbol> --budget 4000
 ```
