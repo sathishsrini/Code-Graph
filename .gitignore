@@ -27,6 +27,8 @@ npm-debug.log*
 .claude/settings.local.json
 .claude/sessions/active/
 .claude/completions/
+# per-slice agent worktrees (plan §7); each is its own checkout, never content
+.claude/worktrees/
 
 # OS
 Thumbs.db
