@@ -66,6 +66,8 @@ export interface PurgeCounts {
   unresolved: number;
   chain: number;
   cfg: number;
+  /** CTX-S9: declared columns owned by a migration file. */
+  columns: number;
   files: number;
 }
 
@@ -80,7 +82,7 @@ export function purgeByProvenance(
   store: FactStore, repoId: number, paths: string[],
   evidenceKinds: EvidenceKind[] = STATIC_EVIDENCE,
 ): PurgeCounts {
-  const counts: PurgeCounts = { edges: 0, unresolved: 0, chain: 0, cfg: 0, files: 0 };
+  const counts: PurgeCounts = { edges: 0, unresolved: 0, chain: 0, cfg: 0, columns: 0, files: 0 };
 
   for (const path of paths) {
     const file = store.getFile(repoId, path);
@@ -89,6 +91,7 @@ export function purgeByProvenance(
     counts.unresolved += store.deleteUnresolvedByProvenance(file.id);
     counts.chain += store.deleteChainByProvenance(file.id, evidenceKinds);
     counts.cfg += store.deleteCfgByProvenance(file.id);
+    counts.columns += store.deleteColumnsByProvenance(file.id);
     counts.files += 1;
   }
   return counts;

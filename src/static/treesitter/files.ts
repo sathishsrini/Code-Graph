@@ -36,8 +36,16 @@ export interface EnumeratedFile {
  * into `node_modules` to then reject each file costs minutes on a real repo.
  * Anything it skips would also have been rejected by `documentAllowed`, and
  * the config is what decides.
+ *
+ * `accepts` filters by file type; the config still decides membership. The
+ * default is "has a tree-sitter grammar"; the indexer widens it to `.sql` for the DDL
+ * extractor (CTX-S9), so a migration is hashed, tracked and purged like any
+ * other file in the declared set.
  */
-export function enumerateFiles(repo: RepoConfig): EnumeratedFile[] {
+export function enumerateFiles(
+  repo: RepoConfig,
+  accepts: (relPath: string) => boolean = (p) => grammarFor(p) !== null,
+): EnumeratedFile[] {
   const out: EnumeratedFile[] = [];
 
   const walkDir = (dir: string): void => {
@@ -59,7 +67,7 @@ export function enumerateFiles(repo: RepoConfig): EnumeratedFile[] {
       if (isDir) { walkDir(abs); continue; }
 
       const rel = relative(repo.rootPath, abs).split("\\").join("/");
-      if (!grammarFor(rel)) continue;
+      if (!accepts(rel)) continue;
       if (!documentAllowed(repo, rel)) continue;
       out.push({ relativePath: rel, absolutePath: abs });
     }

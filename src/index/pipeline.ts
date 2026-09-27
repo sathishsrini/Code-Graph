@@ -10,6 +10,7 @@
 //   2. purge by provenance                 -> exactly what those files claimed (R28)
 //   3. SCIP  -> symbols, CALLS, unresolved_calls
 //   4. tree-sitter -> THROWS, READS/WRITES, READS_CONFIG
+//   4c. SQL DDL -> datastore columns, DDL gaps (CTX-S9)
 //   5. boot  -> routes, route_chain, HANDLES
 //
 // SCIP runs before tree-sitter because tree-sitter findings are attributed to
@@ -53,6 +54,8 @@ import {
 import { displayNameOf, symbolKind } from "../static/scip/symbol.ts";
 import { resolveCrossService, type RouteTarget } from "../derive/cross-service.ts";
 import { callSiteOwner } from "../static/treesitter/ingest.ts";
+import { extractDdl, isDdlFile } from "../static/ddl.ts";
+import { ingestDdl, type DdlCounts } from "../static/ddl-ingest.ts";
 
 export interface IndexOptions {
   store: FactStore;
@@ -67,13 +70,15 @@ export interface IndexOptions {
 export interface IndexReport {
   repo: string;
   change: ChangeSet;
-  purged: { edges: number; unresolved: number; chain: number; files: number };
+  purged: { edges: number; unresolved: number; chain: number; columns: number; files: number };
   skipped: boolean;
   reason: string;
   symbols: number;
   calls: number;
   unresolvedCalls: number;
   treesitter: { throws: number; reads: number; writes: number; configs: number; fileScoped: number };
+  /** CTX-S9: tables and columns from the `.sql` migrations in the file set. */
+  ddl: DdlCounts & { files: number };
   /** P1-T17/T18: per-function control flow and its edge attribution. */
   cfg: { functions: number; blocks: number; errorExits: number; attributed: number; unkeyed: number };
   boot: {
@@ -99,7 +104,8 @@ export async function indexRepo(options: IndexOptions): Promise<IndexReport> {
   const runId = store.startRun(repoId, "static", "code-intel/P1", options.commitSha ?? "");
 
   // --- 1. hash the declared file set (R27) --------------------------------
-  const files = enumerateFiles(repo);
+  // `.sql` joins the set so a migration is hashed and purged like source (CTX-S9).
+  const files = enumerateFiles(repo, (p) => grammarFor(p) !== null || isDdlFile(p));
   const hashes = new Map<string, string>();
   const sources = new Map<string, string>();
   for (const f of files) {
@@ -115,8 +121,9 @@ export async function indexRepo(options: IndexOptions): Promise<IndexReport> {
     store.finishRun(runId);
     return {
       repo: repo.name, change, skipped: true, reason: plan.reason,
-      purged: { edges: 0, unresolved: 0, chain: 0, files: 0 },
+      purged: { edges: 0, unresolved: 0, chain: 0, columns: 0, files: 0 },
       symbols: 0, calls: 0, unresolvedCalls: 0,
+      ddl: { files: 0, tables: 0, columns: 0, added: 0, gaps: 0, skipped: 0 },
       treesitter: { throws: 0, reads: 0, writes: 0, configs: 0, fileScoped: 0 },
       cfg: { functions: 0, blocks: 0, errorExits: 0, attributed: 0, unkeyed: 0 },
       boot: null, missingArtifacts: [],
@@ -134,7 +141,8 @@ export async function indexRepo(options: IndexOptions): Promise<IndexReport> {
   // rows are gone, so the next diff stops reporting them.
   const fileIds = new Map<string, number>();
   for (const [path, hash] of hashes) {
-    const lang = repo.lang === "py" ? "py" : path.endsWith(".py") ? "py" : langOf(path);
+    const lang = isDdlFile(path) ? "sql"
+      : repo.lang === "py" ? "py" : path.endsWith(".py") ? "py" : langOf(path);
     fileIds.set(path, store.upsertFile(repoId, path, lang, hash, runId));
   }
   forgetDeletedFiles(store, repoId, change.deleted);
@@ -217,6 +225,24 @@ export async function indexRepo(options: IndexOptions): Promise<IndexReport> {
     cfg.unkeyed += counts.unkeyed;
   }
 
+  // --- 4c. SQL DDL (CTX-S9) ------------------------------------------------
+  // Migrations declare tables and columns. Independent of SCIP: a CREATE TABLE
+  // has no caller to attribute. Its table node is the one the SQL literals
+  // above already used, and every row is owned by the migration's file (R28).
+  const ddl = { files: 0, tables: 0, columns: 0, added: 0, gaps: 0, skipped: 0 };
+  for (const [path, text] of sources) {
+    if (!isDdlFile(path)) continue;
+    const counts = ingestDdl({
+      writer, store, repoName: repo.name, fileId: fileIds.get(path)!, runId,
+    }, extractDdl(path, text));
+    ddl.files += 1;
+    ddl.tables += counts.tables;
+    ddl.columns += counts.columns;
+    ddl.added += counts.added;
+    ddl.gaps += counts.gaps;
+    ddl.skipped += counts.skipped;
+  }
+
   // --- 5. boot -------------------------------------------------------------
   let boot: IndexReport["boot"] = null;
   const bootPath = resolve(join(artifactDir, "boot", `${repo.name}.json`));
@@ -253,7 +279,7 @@ export async function indexRepo(options: IndexOptions): Promise<IndexReport> {
   store.finishRun(runId);
   return {
     repo: repo.name, change, purged, skipped: false, reason: plan.reason,
-    symbols, calls, unresolvedCalls, treesitter, cfg, boot, missingArtifacts,
+    symbols, calls, unresolvedCalls, treesitter, ddl, cfg, boot, missingArtifacts,
   };
 }
 

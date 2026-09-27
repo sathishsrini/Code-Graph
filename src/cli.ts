@@ -49,6 +49,7 @@ import { renderIndexReport } from "./index/report.ts";
 import { buildSearchIndex } from "./index/search.ts";
 import { buildGraph, renderBuildReport } from "./index/build.ts";
 import { search, type FollowQuery, type SearchCandidate } from "./query/workflow.ts";
+import { listTables, renderTables } from "./query/tables.ts";
 
 const BREAK = String.fromCharCode(10);
 const DEFAULT_DB = ".codeintel/graph.db";
@@ -84,6 +85,7 @@ COMMANDS
   co-changed [file]   Derive, or query, files that change together (P3-T1)
   search build        Rebuild the FTS5 seed index from the store (P3-T3)
   search <phrase>     Fuzzy phrase → one seed, then its effects (P3-T3)
+  tables              Tables and columns from SQL migrations, with gaps (CTX-S9)
   summaries generate Bottom-up summaries over a LOCAL model, cache-first (P3-T2)
   summaries read <k>  Print a generated summary (never loads the model)
   help                Show this message
@@ -321,6 +323,9 @@ async function main(argv: string[]): Promise<number> {
 
     case "co-changed":
       return cmdCoChanged(options, positionals[1] ?? "");
+
+    case "tables":
+      return cmdTables(options);
 
     case "search":
       if (sub === "build") return cmdSearchBuild(options);
@@ -1056,6 +1061,23 @@ function cmdCoChanged(options: Options, file: string): number {
  * instruments the FIXTURES and real-service instrumentation is tracked as an
  * external dependency with its own owner.
  */
+/**
+ * CTX-S9: every table with the columns its migrations declare, the source
+ * file:line, and the DDL gaps. The OPEN-9 limit is part of the output.
+ */
+function cmdTables(options: Options): number {
+  const store = new FactStore(options.db);
+  try {
+    const report = listTables(store);
+    process.stdout.write(options.json
+      ? JSON.stringify(report, null, 2) + BREAK
+      : renderTables(report));
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
 async function cmdTraffic(options: Options): Promise<number> {
   const ports = new Map<string, number>();
   try {

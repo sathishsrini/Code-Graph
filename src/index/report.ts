@@ -25,7 +25,9 @@ export function renderIndexReport(reports: IndexReport[]): string {
     if (r.purged.files > 0) {
       lines.push(
         `  purged     : ${r.purged.edges} edges, ${r.purged.unresolved} unresolved, ` +
-        `${r.purged.chain} chain rows, from ${r.purged.files} file(s)  (by provenance — no node deleted)`,
+        `${r.purged.chain} chain rows` +
+        (r.purged.columns > 0 ? `, ${r.purged.columns} columns` : "") +
+        `, from ${r.purged.files} file(s)  (by provenance — no node deleted)`,
       );
     }
     lines.push(
@@ -40,6 +42,15 @@ export function renderIndexReport(reports: IndexReport[]): string {
         ? `   (${r.treesitter.fileScoped} attributed to the file — no enclosing symbol)`
         : ""),
     );
+    if (r.ddl.files > 0) {
+      // CTX-S9. Gaps are counted here and listed by `tables`, never dropped.
+      lines.push(
+        `  ddl        : ${r.ddl.tables} tables, ${r.ddl.columns} columns ` +
+        `(+${r.ddl.added} added by ALTER TABLE), ${r.ddl.gaps} gap${r.ddl.gaps === 1 ? "" : "s"}, ` +
+        `${r.ddl.skipped} statement(s) skipped as not table/column DDL, ` +
+        `from ${r.ddl.files} .sql file(s)`,
+      );
+    }
     if (r.cfg.functions > 0 || r.cfg.unkeyed > 0) {
       lines.push(
         `  cfg        : ${r.cfg.functions} functions, ${r.cfg.blocks} blocks, ` +

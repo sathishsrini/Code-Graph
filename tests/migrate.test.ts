@@ -124,6 +124,7 @@ describe("phase 1 schema", () => {
         function_cfg: "src/static/cfg-ingest.ts",
         co_changed: "src/derive/co-changed.ts",
         search_vectors: "src/index/search.ts",
+        datastore_columns: "src/static/ddl-ingest.ts",
       };
       for (const [table, producer] of Object.entries(producers)) {
         assert.ok(names.has(table), `${table} ships with its producer (${producer})`);

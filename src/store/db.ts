@@ -133,6 +133,21 @@ export interface UnresolvedInput {
   runId: number;
 }
 
+/** One declared column (CTX-S9, migration 011). Keyed by the datastore node (R12). */
+export interface DatastoreColumnInput {
+  datastoreNodeId: number;
+  name: string;
+  dataType: string | null;
+  position: number;
+  notNull: boolean;
+  primaryKey: boolean;
+  statement: "create_table" | "alter_add";
+  statementLine: number;
+  fileId: number;
+  line: number;
+  runId: number;
+}
+
 export interface IntegrityReport {
   ok: boolean;
   foreignKeyViolations: number;
@@ -549,6 +564,28 @@ export class FactStore {
       `UPDATE edges SET cfg_block_index = ?
         WHERE src_node_id = ? AND file_id = ? AND line = ?`,
     ).run(blockIndex, srcNodeId, fileId, line);
+    return Number(r.changes);
+  }
+
+  // -- datastore_columns (CTX-S9) -------------------------------------------
+
+  /** Idempotent: a re-index of an unchanged migration inserts nothing new. */
+  insertDatastoreColumn(c: DatastoreColumnInput): void {
+    this.db.prepare(
+      `INSERT INTO datastore_columns
+         (datastore_node_id, name, data_type, position, not_null, primary_key,
+          statement, statement_line, file_id, line, run_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT DO NOTHING`,
+    ).run(
+      c.datastoreNodeId, c.name, c.dataType, c.position, c.notNull ? 1 : 0,
+      c.primaryKey ? 1 : 0, c.statement, c.statementLine, c.fileId, c.line, c.runId,
+    );
+  }
+
+  /** R28: the columns one migration file declared, and nothing else. */
+  deleteColumnsByProvenance(fileId: number): number {
+    const r = this.db.prepare("DELETE FROM datastore_columns WHERE file_id = ?").run(fileId);
     return Number(r.changes);
   }
 
