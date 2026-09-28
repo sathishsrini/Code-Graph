@@ -29,6 +29,12 @@
   - **§M** error backtracking
   - **§Q** risks, and what static analysis cannot determine
 
+## Setup
+
+- `docs/SETUP.md` — run code-intel on another machine from git: prerequisites,
+  clone, install, `config/repos.json` paths, `build`, the viewer, Claude Code wiring,
+  updating, troubleshooting.
+
 ## Task-Specific Topics (Load As Needed)
 
 Add topic files in `docs/learnings/` and list them here.

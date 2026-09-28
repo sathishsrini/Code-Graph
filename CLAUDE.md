@@ -86,6 +86,7 @@ node src/cli.ts summaries read <nodeKey> --kind <function|module|service>
 ```
 
 Full command set and engine workflow: `.claude/QUICK_START.md`
+Setting up on another machine (clone → install → config → build → viewer → Claude): `docs/SETUP.md`
 
 ---
 
