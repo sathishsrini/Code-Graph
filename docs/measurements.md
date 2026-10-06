@@ -691,3 +691,52 @@ were added. A pack that was wrong about whether GRN creation *writes*
 **Not measured.** Whether an agent given this document produces a better change
 than one given the files. That is the question M9 also left open and it needs a
 task with a real edit and a reviewer, not a token count.
+
+---
+
+## M12 — what the `--cwd` separator cost (P1-T3, 2026-10-06)
+
+The clearest number in this file, because the before and after differ by one
+path separator and nothing else.
+
+| | before | after |
+|---|---|---|
+| `51-integration.scip` | **88 bytes** (metadata header, zero documents) | **37,068 bytes** |
+| symbols in that service | **0** | **44** |
+| `CALLS` edges from it | **0** | **15** (39 reported by the indexer, 15 intra-service after ingest filtering) |
+| CFG blocks | **0** | **35** |
+| error exits | **0** | **7** |
+| functions that could not be keyed to a symbol | n/a | **0** |
+
+Graph-wide after: 928 nodes, 1,540 edges, 833 symbols, 147 CFG blocks, 8
+recorded gaps.
+
+**Why it stayed hidden for two phases.** The failing path exits 0. It logs
+`Total Project Files 3`, logs `Sucessfully wrote SCIP index`, and writes a
+well-formed index containing nothing. The only signal is the file size, which is
+why `EMPTY_INDEX_BYTES` exists — that check is the reason this was a known gap
+rather than a fictional Python call graph, and it is the one part of the original
+P1-T3 work that behaved correctly.
+
+The misdiagnosis is worth recording too. scip-python prints
+
+```
+Python script failed with code 9009: Python was not found...
+Falling back to pip show approach
+```
+
+to stderr during dependency gathering, and OPEN-5 took that for the cause. It is
+a non-fatal fallback: the run continues and succeeds. **The visible error and the
+actual error were unrelated**, and the engine's own discipline — report the gap,
+do not guess — is what kept a wrong answer out of the graph for the two phases it
+took to find the real one.
+
+**Zero unkeyable functions** is the detail worth noticing: better than either
+JavaScript service (`40-kri-router` leaves 10, `41-kri-engine` 17). Python's
+`def` is always a named definition, where JS's `fastify.post("/x", async (req) =>
+…)` is an anonymous handler with no SCIP symbol to attribute a CFG to.
+
+**Not measured.** scip-python's dependency probe still fails, so third-party
+symbols go unresolved — 4 stdlib calls land as `python:python-stdlib@3.11`
+boundary calls rather than resolved definitions. The `--environment <json-file>`
+flag exists for this and is untried.

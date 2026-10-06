@@ -133,7 +133,8 @@ OPTIONS
   --json              Machine-readable output
 
 STATUS
-  Phases 0-2 complete; Phase 3 in progress. The plan is
+  Phases 0-3 complete. Phase 3 is open-ended by design; its five planned
+  tasks and P3-T6..T12 have shipped. The plan is
   plans/code-intelligence-engine-plan-v2.md; implementation/RECORD.md is what
   actually shipped, and implementation/PLAN-DELTAS.md is where they differ.
 `;

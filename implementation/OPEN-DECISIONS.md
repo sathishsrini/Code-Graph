@@ -12,7 +12,7 @@ ran against the corpus.
 | OPEN-5 | `scip-python` environment | P1-T3 | **closed (P1-T3 fix)** — it was never the environment. `--cwd` with forward slashes made the indexer emit an empty index while exiting 0. See RECORD. | Working assumption: a dedicated indexing venv on 3.11/3.12, recorded in `repos.json` as `pythonBin`. The indexing environment need not match the runtime one. No `__init__.py` added to the fixture. |
 | OPEN-6 | Route schemas unavailable | P1-T4 | **open** | Working assumption: accept NULL, record as a known gap. R72 — no producer, no fallback extractor for a fixture-specific problem. |
 | OPEN-7 | OTel instrumentation owner | P2-T7 | **open, external** | Outside the engine's control. Must not block Phase 1. Fixture instrumentation + a traffic generator are in scope; real-service instrumentation is not. |
-| OPEN-8 | LLM provider / model | P3-T2 | **open** | Deferred behind a provider interface. Not blocking Phases 0–2. |
+| OPEN-8 | LLM provider / model | P3-T2 | **closed** — a LOCAL instruct model on this machine (`src/llm/local.ts`, Qwen2.5-0.5B-Instruct by default, overridable). No API, no key management, no data leaving the box. Vectors for R67 still need an `EmbeddingProvider`; none is configured. |
 | OPEN-9 | Shared-database coupling | P1-T13 | **open** | Working assumption: leave implicit, surface as a *data dependency* in `impact` (R38). Two services writing one `datastore` node is already a join, and a stored edge would violate R72. |
 
 ## What Phase 0 did not establish

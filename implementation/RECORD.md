@@ -691,8 +691,8 @@ rather than covering for each other.
 | Task | Commit | State |
 |---|---|---|
 | **P3-T1 `co_changed` from git** | `a1d409b` | **done** |
-| P3-T2 hierarchical LLM summaries | — | blocked on OPEN-8 (provider not chosen) |
-| **P3-T3 FTS5 + embeddings for seeding** | `d33c8cc` | **done — lexical only; OPEN-8 blocks vectors** |
+| **P3-T2 hierarchical LLM summaries** | `a99eb5b`, `4cf32e9` | **done — local model, OPEN-8 closed** |
+| **P3-T3 FTS5 + embeddings for seeding** | `d33c8cc` | **done — lexical; vectors need an EmbeddingProvider, none configured** |
 | **P3-T4 data-flow side-car (R68)** | `—` | **done — adapter + the honest refusal** |
 | **P3-T5 indexer registry (R69)** | `—` | **done — the seam, not speculative adapters** |
 | **P3-T6 `search` over MCP (R79)** | `—` | **done** |
@@ -703,8 +703,6 @@ rather than covering for each other.
 | **P3-T11 impact tier (R84)** | `—` | **done** |
 | **P3-T12 `feature_pack` MCP tool** | `—` | **done — GOAL 2 REACHED** |
 
-The P3-T2 row above is stale: OPEN-8 was closed with a decision and the feature
-shipped — see the narrative entry below and commits `a99eb5b` / `4cf32e9`.
 
 ## P3-T1 — `co_changed`
 
