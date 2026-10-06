@@ -693,7 +693,7 @@ rather than covering for each other.
 | **P3-T1 `co_changed` from git** | `a1d409b` | **done** |
 | P3-T2 hierarchical LLM summaries | — | blocked on OPEN-8 (provider not chosen) |
 | **P3-T3 FTS5 + embeddings for seeding** | `d33c8cc` | **done — lexical only; OPEN-8 blocks vectors** |
-| P3-T4 Joern/Opengrep side-car | — | not started |
+| **P3-T4 data-flow side-car (R68)** | `—` | **done — adapter + the honest refusal** |
 | **P3-T5 indexer registry (R69)** | `—` | **done — the seam, not speculative adapters** |
 | **P3-T6 `search` over MCP (R79)** | `—` | **done** |
 | **P3-T7 repo-scoped file attribution (R80)** | `—` | **done — bug fix** |
@@ -1459,3 +1459,70 @@ mapping. Only the second is new; the test covers the gap between the first two,
 and nothing yet covers the third. No boot adapter exists for any framework
 outside Fastify/FastAPI/Next.js, so a new language would arrive with symbols and
 no route chain.
+
+---
+
+## P3-T4 — the escape hatch, and the refusal that makes it safe
+
+R68 is the escape hatch the plan reserved when P1-T17's scope was bounded:
+
+> "It answers 'this call sits inside the `if (authErr)` branch, which exits with
+> an error'. It does **not** answer 'authErr is non-null when the token is
+> invalid' — that is interprocedural data flow, which stays out of scope. R68
+> (Joern side-car) remains the escape hatch if you ever need it."
+
+`src/static/sidecar.ts` asks that question of an external analyser, one question
+per invocation. `rules/dataflow.yml` holds three reviewed taint queries — a
+request value reaching a template-literal SQL string, a request value reaching an
+outbound HTTP target (how a proxy becomes an SSRF), and a request header reaching
+`cursor.execute` in the Python service.
+
+**Three properties, and none of them is about capability.**
+
+*It cannot write edges.* Not "does not" — cannot. It imports no `GraphWriter` and
+no `FactStore`, takes no insert path, and returns a value. An external analyser's
+taint verdict comes from a different tool with its own soundness assumptions, and
+a row in `edges` would make it indistinguishable from a compiler-resolved call.
+Verified the way R63's LLM boundary is: a test reads the source and asserts the
+*import lines* name no writer.
+
+*"Nobody looked" is not "nothing found".* A missing analyser, an unparseable
+payload and a clean run are three outcomes, and the type forces a caller to tell
+them apart. `renderDataflow` prints **"UNANSWERED — nobody looked. This is NOT a
+clean result"** and is forbidden by test from borrowing the clean wording. The
+exit code says the same thing: 0 answered-and-clean, 1 answered-with-findings,
+**2 unanswered** — so no CI script can treat a missing tool as a pass.
+
+*Per question, per invocation.* No background pass, no cache, no stored result —
+the plan's acceptance criterion. A cached taint verdict ages into a lie the moment
+the code changes, with nothing to invalidate it, because nothing here
+participates in the incremental-indexing hash.
+
+**Joern is probe-only, deliberately.** Its output is a Scala-REPL JSON whose
+shape depends on the query script; shipping a parser that has never seen real
+output would be a guess presented as support. Opengrep and Semgrep share a rule
+format and an output schema, so one tested parser serves both.
+
+**The test suite found a real crash in the parser.** `JSON.parse("null")`
+succeeds and yields `null`, and reading `.results` off it throws — so an analyser
+emitting `null` would have crashed the caller rather than being reported as
+unanswered, which is the single outcome this module exists to make impossible. It
+is now guarded, and `""`, `"not json"`, `"null"`, `"[]"`, `"{}"` and
+`{"results":"nope"}` all return `null` rather than an empty array.
+
+**The first version of the structural test could not fail.** It searched the
+whole file for `GraphWriter`, which the header uses several times to explain why
+no writer is imported — so the test matched its own documentation. It now reads
+import lines only.
+
+**Verified.** `dataflow 51-integration` on this machine, where none of the three
+analysers is installed, prints the refusal with an install hint for each and
+exits 2. 548 tests pass; typecheck clean.
+
+**What it does not do.** Neither invocation path has ever run against a real
+analyser here, and both adapters are marked `verified: false` for that reason —
+the parser is tested against a fixture, the spawn is not. The rules match shapes,
+not semantics: `request-value-reaches-sql` fires on a template literal and cannot
+tell a parameterised query from a concatenated one, which is why its message says
+so. And nothing joins a finding back to a `nodes` row — by design, but it means a
+finding is read by a person, not traversed.

@@ -43,6 +43,7 @@ import { generateTraffic, corpusTargets } from "./runtime/traffic.ts";
 import { deriveCoChanged, peersOf } from "./derive/co-changed.ts";
 import { documentAllowed } from "./static/scip/runner.ts";
 import { adapterFor, probe, supportedLangs } from "./static/scip/registry.ts";
+import { askDataflow, renderDataflow, sideCarStatus } from "./static/sidecar.ts";
 import { scanRepo, renderScan } from "./static/treesitter/report.ts";
 import { indexRepo, linkCrossServiceRepos, type IndexReport } from "./index/pipeline.ts";
 import { readSummary } from "./llm/summaries.ts";
@@ -60,6 +61,7 @@ import {
 const BREAK = String.fromCharCode(10);
 const DEFAULT_DB = ".codeintel/graph.db";
 const DEFAULT_CONFIG = "config/repos.json";
+const DEFAULT_DATAFLOW_RULES = "rules/dataflow.yml";
 
 const USAGE = `code-intel — architecture-aware code intelligence engine
 
@@ -91,6 +93,7 @@ COMMANDS
   search <phrase>     Fuzzy phrase → one seed, then its effects (P3-T3)
   features check      Verify every rules/features.yml entry still resolves (P3-T8)
   feature <phrase>    Everything needed to change one business feature (P3-T9)
+  dataflow [repo]     Ask an external analyser one taint question (P3-T4)
   summaries generate Bottom-up summaries over a LOCAL model, cache-first (P3-T2)
   summaries read <k>  Print a generated summary (never loads the model)
   help                Show this message
@@ -113,6 +116,7 @@ OPTIONS
   --limit <n>         impact: routes to list before trimming     (default 25)
   --seed <key>        search: explicit seed node key, correcting stage 1 (P3-T3)
   --features <path>   features: manifest path      (default: ${DEFAULT_FEATURES_PATH})
+  --rules <path>      dataflow: taint rule file    (default: ${DEFAULT_DATAFLOW_RULES})
   --entry <spec>      features: an entry point, repeatable, overriding the manifest
   --budget <n>        context: token budget                      (default 4000)
   --no-source         context: omit tier-1 raw source
@@ -159,6 +163,7 @@ interface Options {
   budget: number | undefined;
   features: string;
   entries: string[];
+  rules: string;
   noSource: boolean;
   measure: boolean;
   port: number | undefined;
@@ -202,6 +207,7 @@ async function main(argv: string[]): Promise<number> {
         // Repeatable so several entry points can be named on one command line.
         // `--seed` is deliberately NOT multiple: cmdSearch reads it as a string.
         entry: { type: "string", multiple: true },
+        rules: { type: "string" },
         "no-source": { type: "boolean", default: false },
         measure: { type: "boolean", default: false },
         port: { type: "string" },
@@ -246,6 +252,7 @@ async function main(argv: string[]): Promise<number> {
     budget: values.budget ? Number(values.budget) : undefined,
     features: values.features ?? DEFAULT_FEATURES_PATH,
     entries: (values.entry as string[] | undefined) ?? [],
+    rules: values.rules ?? DEFAULT_DATAFLOW_RULES,
     noSource: values["no-source"] === true,
     measure: values.measure === true,
     port: values.port ? Number(values.port) : undefined,
@@ -344,6 +351,9 @@ async function main(argv: string[]): Promise<number> {
 
     case "feature":
       return cmdFeature(options, positionals.slice(1).join(" "));
+
+    case "dataflow":
+      return cmdDataflow(options, positionals[1] ?? "");
 
     case "mcp":
       // Never returns: the transport owns the process until stdin closes.
@@ -796,6 +806,47 @@ function cmdImpact(options: Options, seed: string): number {
  * `resolveSeed` offered, and exits non-zero — a stale entry must be visible in
  * CI, not discovered as a silently thinner context pack.
  */
+/**
+ * dataflow — ask an external analyser the one question this engine refuses.
+ *
+ * The CFG is syntactic and per-function (R75's stated scope boundary), so
+ * "is authErr non-null when the token is invalid" is out of scope here and
+ * asked of Semgrep/Opengrep/Joern instead. Nothing is stored: the side-car
+ * takes no writer and the answer is printed.
+ *
+ * The exit code distinguishes the three outcomes a caller cares about, because
+ * "unanswered" must never be scripted as a pass: 0 answered-and-clean,
+ * 1 answered-with-findings, 2 unanswered.
+ */
+function cmdDataflow(options: Options, repoName: string): number {
+  let paths: string[] = [];
+  if (repoName) {
+    const repo = resolveRepo({ ...options, repo: repoName });
+    if (typeof repo === "number") return repo;
+    paths = [repo.rootPath];
+  } else {
+    try {
+      paths = loadConfig(options.config, { checkPaths: options.checkPaths })
+        .repos.map((r: RepoConfig) => r.rootPath);
+    } catch (e) {
+      if (e instanceof ConfigError) {
+        process.stderr.write(`config error: ${e.message}` + BREAK);
+        return 1;
+      }
+      throw e;
+    }
+  }
+
+  const answer = askDataflow({ about: repoName || "all repos", paths, rules: options.rules });
+  if (options.json) {
+    process.stdout.write(JSON.stringify({ ...answer, sidecars: sideCarStatus() }, null, 2) + BREAK);
+  } else {
+    process.stdout.write(renderDataflow(answer));
+  }
+  if (!answer.answered) return 2;
+  return answer.findings.length > 0 ? 1 : 0;
+}
+
 /**
  * feature — the whole context for one business feature (P3-T9).
  *

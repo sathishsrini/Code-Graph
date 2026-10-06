@@ -1,0 +1,77 @@
+# Reviewed data-flow queries (task P3-T4, R68).
+#
+# These are the questions this engine deliberately refuses to answer itself.
+# Its CFG is syntactic and per-function: it can say "this call sits inside the
+# `if (authErr)` branch, which exits with an error", and it cannot say "authErr
+# is non-null when the token is invalid". That second question is
+# interprocedural data flow, and it is asked here instead, of an external
+# analyser, one question at a time.
+#
+# Semgrep/Opengrep taint mode. The two share this format, so one file serves
+# both. Run through:  node src/cli.ts dataflow <repo>
+#
+# A finding here is `inferred` and nothing more. It comes from a different
+# analyser with its own soundness assumptions, which this engine cannot check,
+# so it is never written to `edges` and never rendered as certain.
+#
+# An empty result is not a clean bill of health: it means these rules matched
+# nothing, and a rule only finds the sinks it names.
+
+rules:
+  - id: request-value-reaches-sql
+    languages: [javascript, typescript]
+    severity: WARNING
+    mode: taint
+    message: >-
+      A request-controlled value reaches a SQL string without passing a
+      parameterised query. Confirm the sink is actually parameterised before
+      acting on this - the rule matches the shape, not the semantics.
+    pattern-sources:
+      - pattern: $REQ.body
+      - pattern: $REQ.query
+      - pattern: $REQ.params
+      - pattern: $REQ.headers
+    pattern-sanitizers:
+      # Reviewed, not inferred. A helper is listed here because someone read it.
+      - pattern: parseInt(...)
+      - pattern: Number(...)
+      - pattern: $X.map(...)
+    pattern-sinks:
+      # Template-literal SQL is the shape worth flagging; a parameterised
+      # `client.query(text, values)` is not a finding and must not match.
+      - pattern: $CLIENT.query(`...`)
+
+  - id: request-value-reaches-outbound-http
+    languages: [javascript, typescript]
+    severity: INFO
+    mode: taint
+    message: >-
+      A request-controlled value reaches an outbound HTTP target. This is how a
+      proxy becomes an SSRF; the engine records the REQUESTS edge but cannot
+      tell whether the destination is attacker-controlled.
+    pattern-sources:
+      - pattern: $REQ.body
+      - pattern: $REQ.query
+      - pattern: $REQ.params
+    pattern-sanitizers:
+      - pattern: new URL(...)
+    pattern-sinks:
+      - pattern: axios($X)
+      - pattern: axios.$M($X, ...)
+      - pattern: fetch($X, ...)
+
+  - id: header-reaches-sql
+    languages: [python]
+    severity: WARNING
+    mode: taint
+    message: >-
+      A request header reaches a SQL string. The FastAPI service builds its own
+      queries, so this is the sink the TypeScript rules above cannot see.
+    pattern-sources:
+      - pattern: request.headers
+      - pattern: request.query_params
+    pattern-sanitizers:
+      - pattern: int(...)
+    pattern-sinks:
+      - pattern: $CUR.execute($Q, ...)
+      - pattern: $CUR.execute($Q)
