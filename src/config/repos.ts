@@ -19,7 +19,8 @@ import { resolve, isAbsolute } from "node:path";
 export type Lang = "ts" | "js" | "py";
 export type Framework = "fastify" | "fastapi" | "nextjs" | "none";
 
-const LANGS: readonly Lang[] = ["ts", "js", "py"];
+/** Exported so P3-T5's registry-completeness test can iterate it. */
+export const LANGS: readonly Lang[] = ["ts", "js", "py"];
 const FRAMEWORKS: readonly Framework[] = ["fastify", "fastapi", "nextjs", "none"];
 
 export interface RepoConfig {

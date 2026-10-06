@@ -694,7 +694,7 @@ rather than covering for each other.
 | P3-T2 hierarchical LLM summaries | — | blocked on OPEN-8 (provider not chosen) |
 | **P3-T3 FTS5 + embeddings for seeding** | `d33c8cc` | **done — lexical only; OPEN-8 blocks vectors** |
 | P3-T4 Joern/Opengrep side-car | — | not started |
-| P3-T5 additional languages | — | not started |
+| **P3-T5 indexer registry (R69)** | `—` | **done — the seam, not speculative adapters** |
 | **P3-T6 `search` over MCP (R79)** | `—` | **done** |
 | **P3-T7 repo-scoped file attribution (R80)** | `—` | **done — bug fix** |
 | **P3-T8 reviewed feature manifest (R81)** | `—` | **done** |
@@ -1393,3 +1393,69 @@ falls back to `pip show`; that costs resolution of third-party symbols, which is
 why 4 stdlib calls land as `python:python-stdlib@3.11` boundary calls rather than
 resolved definitions. The `--environment <json-file>` flag exists for this and is
 untried. 526 tests pass; typecheck clean.
+
+---
+
+## P3-T5 — the seam for a new language, and the guard that keeps it honest
+
+R69 asks for "additional languages via the SCIP indexer ecosystem", and the
+acceptance criterion says why this is a registry rather than a longer ternary:
+*a new language joins the same `nodes` table with no schema change*. SCIP is
+SCIP — the reader, the normalizer and every query are already
+language-agnostic. The only per-language facts are which binary to run and how
+it is told what to index.
+
+**The defect this closes exists today, before any new language does.** The
+dispatch was
+
+```ts
+repo.lang === "py" ? runScipPython(...) : runScipTypescript(...)
+```
+
+so every language that was not `py` got scip-typescript. Adding `lang: "go"` to
+`repos.json` would have generated a tsconfig, run a TypeScript indexer over Go
+source, written an index describing almost nothing, and reported a service with
+no symbols and **no reason given**. That is the confident fictional architecture
+of M7 and D6, reachable by one line in a config file.
+
+`src/static/scip/registry.ts` holds one `IndexerAdapter` per language, and an
+unknown language is now refused **by name**, with the list of what is supported
+and the three places an adapter is added.
+
+**Availability is asked separately from success.** `probe(adapter, repo)` runs
+`<binary> --version` before the index, because "the binary is missing" and "it
+ran and found nothing" are different answers and only one of them is about the
+code. Conflating them turns a missing toolchain into a service that looks like
+it has no functions. `scip index` now prints `scip-python 0.6.6` /
+`scip-typescript 0.4.0` rather than a hardcoded name.
+
+**The probe found its own bug immediately.** The first version spawned with a
+plain inherited environment and reported *every* installed indexer as missing,
+because this repo's `node_modules/.bin` is only on PATH under an npm script.
+A probe that is wrong in that direction is worse than the defect it guards —
+it converts a working toolchain into a refusal. `indexerEnv(repo)` is now
+exported from the runner and used by both, so the probe searches exactly the
+PATH the runner will.
+
+**No speculative adapters.** Entries for Go, Java or Rust — command strings
+transcribed from documentation, never executed, with no corpus repo to verify
+against — would be rule 1's "no table without an extractor" wearing a different
+hat. The `verified` flag exists on the interface and the CLI labels an
+unverified adapter in its output, so the honest path is open when a repo in a
+new language actually arrives. All three shipped adapters are verified: they
+have been run against a real repository and their output ingested.
+
+**Verified both ways.** `scip index` works through the registry for both
+adapters — `51-integration` (scip-python 0.6.6, 37KB) and `40-kri-router`
+(scip-typescript 0.4.0). And the completeness test was checked by temporarily
+adding `"go"` to `LANGS`: it goes red with *"lang "go" has no indexer adapter"*
+and green again when reverted. A guard that cannot fail is a comment.
+
+534 tests pass; typecheck clean.
+
+**What it does not do.** Adding a language is still three edits, not one —
+`LANGS`, `ADAPTERS`, and `langOf` in the pipeline for the file-extension
+mapping. Only the second is new; the test covers the gap between the first two,
+and nothing yet covers the third. No boot adapter exists for any framework
+outside Fastify/FastAPI/Next.js, so a new language would arrive with symbols and
+no route chain.

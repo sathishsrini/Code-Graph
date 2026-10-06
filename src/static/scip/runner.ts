@@ -242,17 +242,7 @@ export function runScipPython(
   const out = resolve(outputPath);
   mkdirSync(dirname(out), { recursive: true });
 
-  const env = { ...process.env };
-  // The indexer shells out to a bare `python`, and this repo's own
-  // node_modules/.bin is only on PATH when invoked through an npm script.
-  // Both are prepended so the command works from a plain `node src/cli.ts`.
-  const extraPath = [
-    repo.pythonBin ? dirname(resolve(repo.pythonBin)) : null,
-    localBinDir(),
-  ].filter((p): p is string => p !== null);
-  if (extraPath.length > 0) {
-    env.PATH = `${extraPath.join(delimiter)}${delimiter}${env.PATH ?? ""}`;
-  }
+  const env = indexerEnv(repo);
 
   const started = Date.now();
   // `--target-only` is passed only when the repo declares exactly one include
@@ -278,6 +268,30 @@ export function runScipPython(
     status: r.status,
     durationMs: Date.now() - started,
   };
+}
+
+/**
+ * Environment for spawning an indexer, with PATH augmented.
+ *
+ * This repo's own `node_modules/.bin` is only on PATH when invoked through an
+ * npm script, and `scip-python` additionally shells out to a bare `python`.
+ * Both are prepended so a plain `node src/cli.ts` works.
+ *
+ * Exported because P3-T5's availability probe has to look for the binary on the
+ * SAME path the runner will use. A probe that searched a narrower PATH reported
+ * every indexer as missing, which is a worse failure than the one it is meant
+ * to catch: it turns a working toolchain into a refusal.
+ */
+export function indexerEnv(repo?: RepoConfig): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  const extraPath = [
+    repo?.pythonBin ? dirname(resolve(repo.pythonBin)) : null,
+    localBinDir(),
+  ].filter((p): p is string => p !== null);
+  if (extraPath.length > 0) {
+    env.PATH = `${extraPath.join(delimiter)}${delimiter}${env.PATH ?? ""}`;
+  }
+  return env;
 }
 
 /** This project's own `node_modules/.bin`, for spawns that run in another cwd. */

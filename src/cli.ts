@@ -41,9 +41,8 @@ import { analysePr, renderPrComment } from "./ci/pr-impact.ts";
 import { startUi } from "./ui/server.ts";
 import { generateTraffic, corpusTargets } from "./runtime/traffic.ts";
 import { deriveCoChanged, peersOf } from "./derive/co-changed.ts";
-import {
-  runScipTypescript, runScipPython, documentAllowed,
-} from "./static/scip/runner.ts";
+import { documentAllowed } from "./static/scip/runner.ts";
+import { adapterFor, probe, supportedLangs } from "./static/scip/registry.ts";
 import { scanRepo, renderScan } from "./static/treesitter/report.ts";
 import { indexRepo, linkCrossServiceRepos, type IndexReport } from "./index/pipeline.ts";
 import { readSummary } from "./llm/summaries.ts";
@@ -564,9 +563,35 @@ function cmdScipIndex(options: Options): number {
   if (typeof repo === "number") return repo;
 
   const out = options.out || defaultIndexPath(repo);
-  const result = repo.lang === "py"
-    ? runScipPython(repo, out)
-    : runScipTypescript(repo, out, { maxOldSpaceMb: 8192 });
+
+  // P3-T5. A language with no adapter is refused BY NAME. The dispatch this
+  // replaced sent everything that was not `py` to scip-typescript, so one line
+  // in a config file could point a TypeScript indexer at Go source and produce
+  // a service with no symbols and no reason given.
+  const adapter = adapterFor(repo.lang);
+  if (!adapter) {
+    process.stderr.write(
+      `scip index: no indexer adapter for lang "${repo.lang}"` + BREAK +
+      `  supported: ${supportedLangs().join(", ")}` + BREAK +
+      "  Adding one is three edits: LANGS in src/config/repos.ts, an entry in" + BREAK +
+      "  src/static/scip/registry.ts, and langOf in src/index/pipeline.ts." + BREAK,
+    );
+    return 1;
+  }
+
+  // Asked separately from running it: "the binary is missing" and "it ran and
+  // found nothing" are different answers, and only one is about the code.
+  const availability = probe(adapter, repo);
+  if (!availability.available) {
+    process.stderr.write(
+      `scip index: ${adapter.name} is not available` + BREAK +
+      `  reason : ${availability.reason}` + BREAK +
+      `  install: ${adapter.install}` + BREAK,
+    );
+    return 1;
+  }
+
+  const result = adapter.run(repo, out);
 
   if (options.json) {
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
@@ -578,10 +603,9 @@ function cmdScipIndex(options: Options): number {
     `root       : ${repo.rootPath}\n` +
     `include    : ${repo.include.join(", ") || "(everything)"}\n` +
     `exclude    : ${repo.exclude.join(", ") || "(nothing)"}\n` +
-    `indexer    : ${repo.lang === "py" ? "scip-python" : "scip-typescript"}\n` +
-    `file set   : ${repo.lang === "py"
-      ? "enforced at ingest — this indexer takes no config"
-      : "generated tsconfig, then removed"}\n` +
+    `indexer    : ${adapter.name}${availability.version ? ` ${availability.version}` : ""}` +
+    `${adapter.verified ? "" : "  [UNVERIFIED adapter - never run here against a real repo]"}\n` +
+    `file set   : ${adapter.fileSetNote}\n` +
     `output     : ${result.outputPath}\n` +
     `duration   : ${result.durationMs} ms\n`,
   );
