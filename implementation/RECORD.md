@@ -64,7 +64,7 @@ as unnamed locals.
 |---|---|---|
 | P1-T1 full schema + migrations | `887cfcc` | **done** |
 | P1-T2 normalizer | `59972c5` | **done** |
-| P1-T3 scip-python | `ec5e845` | **wired, blocked upstream** |
+| P1-T3 scip-python | `ec5e845` | **done** — unblocked, see P1-T3 below |
 | P1-T4 FastAPI boot adapter | `79fb2e1` | **done** |
 | P1-T5 Next.js static indexing | — | **done** |
 | P1-T6 tree-sitter pass | `99cf028` | **done** |
@@ -1332,3 +1332,64 @@ path is not configurable over MCP (the CLI's `--features` is). And nothing
 measures whether a manifest entry is *sufficient*: a feature naming one of its
 three entry points yields a confident, thinner pack and says nothing about the
 two it left out.
+
+---
+
+## P1-T3 (revisited) — it was never the Python environment
+
+`51-integration` had 3 routes, 1 datastore and **zero symbols**. One of four
+services had no call graph at all, and OPEN-5 recorded the cause as a
+`scip-python` environment problem: the indexer prints
+
+```
+Python script failed with code 9009: Python was not found; run without arguments
+to install from the Microsoft Store...
+Falling back to pip show approach
+```
+
+That message is a **red herring**. It is a non-fatal fallback in scip-python's
+dependency-gathering step, printed to stderr while the run continues. The real
+cause is a path separator, and two of them:
+
+| `--cwd` passed to `scip-python` | index |
+|---|---|
+| `D:/###facilitator/dev-workspace/51-integration` | **88 bytes — zero documents** |
+| `D:\###facilitator\dev-workspace\51-integration` | **37,068 bytes** |
+
+In the empty case the indexer logs `Total Project Files 3`, logs
+`Sucessfully wrote SCIP index`, and **exits 0**. Nothing about the failing path
+reports failure, which is exactly why this survived two phases misdiagnosed.
+
+**Two fixes, both needed.**
+
+1. **`--cwd` is normalised with `resolve()`.** It was the only path in the
+   command passed through verbatim — `--output` already went through
+   `resolve()` and `--target-only` through `join()`, and both of those normalise.
+   That asymmetry is why the symptom looked environmental: every other path
+   worked.
+2. **`quote()` no longer POSIX-escapes backslashes on Windows.** A backslash
+   escapes in `sh` and is a *literal* inside double quotes in `cmd.exe`, so
+   doubling one there does not escape it — it produces a path with doubled
+   separators. Only this repo's root trips it, because `###` is in `quote()`'s
+   trigger class while an ordinary path is passed unquoted. Fixing `--cwd`
+   alone still yielded 88 bytes; both together yield 37KB.
+
+**What the graph gained.** `51-integration` went from 0 symbols to **44 symbols,
+39 CALLS, 9 CFG functions, 35 blocks, 7 error exits, 36 attributed edges** — and
+zero functions that could not be keyed to a symbol, which is a better rate than
+either JavaScript service. `flow POST /api/v1/mail/send` now renders the FastAPI
+`preHandler` chain (`correlation_middleware`, then Starlette's `CORSMiddleware`
+marked `[framework]`), the handler, two inline auth shape-matches, and a call
+tree of `certain` compiler-resolved edges down through `envelope_error` →
+`now_iso`.
+
+**Verified** by running the real indexer, not a fixture. The regression test
+asserts the separator rule on the command string, because the thing being
+guarded against is a *silent* success — a test that needed the indexer installed
+would be skipped on the machines most likely to hit this.
+
+**What it does not do.** `scip-python`'s dependency probe still fails and still
+falls back to `pip show`; that costs resolution of third-party symbols, which is
+why 4 stdlib calls land as `python:python-stdlib@3.11` boundary calls rather than
+resolved definitions. The `--environment <json-file>` flag exists for this and is
+untried. 526 tests pass; typecheck clean.

@@ -8,7 +8,10 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { matchGlob, documentAllowed, buildTsconfig } from "../src/static/scip/runner.ts";
+import {
+  matchGlob, documentAllowed, buildTsconfig, scipPythonCommand,
+} from "../src/static/scip/runner.ts";
+import { sep, resolve } from "node:path";
 import type { RepoConfig } from "../src/config/repos.ts";
 
 function repo(overrides: Partial<RepoConfig> = {}): RepoConfig {
@@ -129,5 +132,46 @@ describe("buildTsconfig", () => {
   test("an empty include widens to everything rather than indexing nothing", () => {
     const c = buildTsconfig(repo()) as { include: string[] };
     assert.deepEqual(c.include, ["**/*"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P1-T3 / OPEN-5 — the regression that cost two phases
+// ---------------------------------------------------------------------------
+describe("scipPythonCommand", () => {
+  // Given a forward-slash --cwd on Windows, `scip-python` logs "Total Project
+  // Files 3" and "Sucessfully wrote SCIP index", exits 0, and writes an
+  // 88-byte metadata header with ZERO documents. Given native separators it
+  // writes 37KB for the same repo. That is why 51-integration had routes and a
+  // datastore but not one symbol — and why OPEN-5 blamed the Python
+  // environment for two phases: the failing path never reports failure.
+  test("--cwd uses native separators, whatever the config wrote", () => {
+    const cmd = scipPythonCommand(
+      repo({ rootPath: "D:/###facilitator/dev-workspace/51-integration", serviceName: "svc" }),
+      "C:/out/i.scip", "",
+    );
+    const cwd = /--cwd "([^"]+)"/.exec(cmd)?.[1] ?? /--cwd (\S+)/.exec(cmd)?.[1] ?? "";
+    assert.ok(cwd.length > 0, cmd);
+    assert.equal(cwd, resolve("D:/###facilitator/dev-workspace/51-integration"));
+    if (sep === "\\") {
+      assert.ok(!cwd.includes("/"), `forward slash survived into --cwd: ${cwd}`);
+    }
+  });
+
+  test("the project name and version reach the command", () => {
+    const cmd = scipPythonCommand(repo({ serviceName: "51-integration" }), "o.scip", "", "1.2.3");
+    assert.ok(cmd.includes("51-integration"));
+    assert.ok(cmd.includes("1.2.3"));
+  });
+
+  test("a missing version defaults rather than emitting an empty flag", () => {
+    // `--project-version ""` makes scip-python fall back to a git revision,
+    // which differs per checkout and makes two indexes incomparable.
+    assert.ok(scipPythonCommand(repo(), "o.scip", "").includes("0.0.0"));
+  });
+
+  test("the target-only fragment is passed through untouched", () => {
+    const cmd = scipPythonCommand(repo(), "o.scip", " --target-only X");
+    assert.ok(cmd.includes(" --target-only X --output"), cmd);
   });
 });

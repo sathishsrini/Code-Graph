@@ -15,7 +15,7 @@
 
 import { spawnSync } from "node:child_process";
 import { writeFileSync, rmSync, existsSync, mkdirSync, statSync } from "node:fs";
-import { join, resolve, dirname, delimiter } from "node:path";
+import { join, resolve, dirname, delimiter, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RepoConfig } from "../../config/repos.ts";
 
@@ -107,10 +107,17 @@ export function tsGlob(pattern: string): string {
  * Quote one shell argument. Paths here are repo roots and output paths, which
  * routinely contain spaces on Windows — and `###` in this corpus.
  */
+
 function quote(value: string): string {
   if (value === "") return '""';
   if (!/[\s"'`$&|;<>()[\]{}*?#!~]/.test(value)) return value;
-  return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
+  // A backslash escapes in a POSIX shell and is a LITERAL inside double quotes
+  // in cmd.exe. Doubling one on Windows therefore does not escape it - it
+  // produces a path with doubled separators, which is how this repo's
+  // D:\###facilitator\... root reached scip-python doubled and came back as an
+  // index with no documents. See `scipPythonCommand` for the measurement.
+  const pattern = sep === "\\" ? /["$`]/g : /["\$`]/g;
+  return `"${value.replace(pattern, "\$&")}"`;
 }
 
 export interface IndexResult {
@@ -199,6 +206,34 @@ export function runScipTypescript(
  * index on this platform. `index` reports the missing artifact by name rather
  * than showing a Python service with zero symbols as if that were a finding.
  */
+/**
+ * The `scip-python index` command line.
+ *
+ * Extracted so the separator rule below is testable without the indexer
+ * installed — the bug it fixes was invisible for two phases precisely because
+ * the failing path still exits 0.
+ *
+ * **`--cwd` must use NATIVE separators.** Given `D:/a/b` on Windows,
+ * `scip-python` logs "Total Project Files 3" and "Sucessfully wrote SCIP
+ * index", exits 0, and emits an 88-byte metadata header with zero documents.
+ * Given `D:\a\b` it emits 37KB for the same repo. Measured on
+ * `51-integration`, which is why that service had routes and a datastore but
+ * not one symbol or CALLS edge.
+ *
+ * `--cwd` was the only path in this command passed through verbatim: `--output`
+ * goes through `resolve()` and `--target-only` through `join()`, and both of
+ * those already normalise. That is why the symptom looked like an environment
+ * problem (OPEN-5) rather than a string problem.
+ */
+export function scipPythonCommand(
+  repo: RepoConfig, outputPath: string, targetOnly: string, projectVersion?: string,
+): string {
+  return `scip-python index --cwd ${quote(resolve(repo.rootPath))}` +
+    ` --project-name ${quote(repo.serviceName)}` +
+    ` --project-version ${quote(projectVersion ?? "0.0.0")}` +
+    `${targetOnly} --output ${quote(outputPath)}`;
+}
+
 export function runScipPython(
   repo: RepoConfig,
   outputPath: string,
@@ -227,11 +262,7 @@ export function runScipPython(
     ? ` --target-only ${quote(join(repo.rootPath, repo.include[0]!.replace(/\/\*+$/, "")))}`
     : "";
 
-  const command =
-    `scip-python index --cwd ${quote(repo.rootPath)}` +
-    ` --project-name ${quote(repo.serviceName)}` +
-    ` --project-version ${quote(options.projectVersion ?? "0.0.0")}` +
-    `${targetOnly} --output ${quote(out)}`;
+  const command = scipPythonCommand(repo, out, targetOnly, options.projectVersion);
 
   const r = spawnSync(command, {
     cwd: repo.rootPath, encoding: "utf8", env, shell: true, timeout: 600_000,
